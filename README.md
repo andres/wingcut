@@ -8,6 +8,8 @@ Status: **stages 1–3 done**: CLI core, multi-panel wings, and a desktop GUI wi
 
 ## Build
 
+Quickest way to try everything on a Linux desktop: `bash scripts/try-local.sh` (see [docs/try-locally.md](docs/try-locally.md)).
+
 ```bash
 cargo build --release        # binary: target/release/wingcut
 cargo test
