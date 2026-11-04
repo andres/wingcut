@@ -140,7 +140,11 @@ fn warnings_go_to_stderr_and_results_to_stdout() {
     let dir = temp("warn");
     let wing = std::fs::read_to_string(ex("wing.toml"))
         .unwrap()
-        .replace("airfoils/", &format!("{}/", ex("airfoils")))
+        // Forward slashes: a Windows path's backslashes are escapes in TOML.
+        .replace(
+            "airfoils/",
+            &format!("{}/", ex("airfoils").replace('\\', "/")),
+        )
         .replace("width = 300", "width = 100");
     let wing_path = dir.join("wing.toml");
     std::fs::write(&wing_path, wing).unwrap();
