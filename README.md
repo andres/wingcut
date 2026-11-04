@@ -2,7 +2,7 @@
 
 Open-source, Linux-first Rust tool that turns a wing definition (airfoils, chord, sweep, twist, dihedral, panels) into synchronised 4-axis G93 G-code for a DIY CNC hot-wire foam cutter running FluidNC.
 
-Status: **stages 1–3 done**: CLI core, multi-panel wings, and a desktop GUI with spar notches, hinge cuts and DXF import. Stage 4 (machine control) is not started. See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
+Status: **stages 1–3 done**: CLI core, multi-panel wings, and a desktop GUI with sheeting, spar notches, slot and V hinge cuts, and DXF import. Stage 4 (machine control) is not started. See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
 
 > Not yet validated on a real machine or in devSim (SPEC §9). Check every file before cutting.
 
@@ -67,7 +67,16 @@ See the commented [examples/machine.toml](examples/machine.toml) and [examples/w
 - `side = "left"` puts the wing root on the root-tower face. `side = "right"` mirrors the panel (wing root on the tip-tower face).
 - Twist is positive nose-up (washout negative), about `twist_pivot` × chord on the chord line. `le_offset` (sweep) is positive aft. `dihedral_offset` is positive up.
 - Axis letters are configurable (`axes = ["X","Y","U","V"]`). Both towers share one set of `limits`.
-- `[[panel.cutout]]` cuts a slot with walls perpendicular to the chord at chord fraction `x`. It is the same fraction on both faces, while `width` and `depth` are in mm, so a constant-section spar fits the whole panel. Use `depth` for a spar notch, or `leave` (material kept at the opposite surface) for a hinge cut. Slot corners are sync points, and kerf is compensated, so the slot in the foam comes out at the nominal size.
+- `[[panel.cutout]]` cuts in from `surface` at chord fraction `x`. It is the same fraction on both faces, while the sizes are in mm, so a constant-section spar fits the whole panel.
+  - Shape: `width` gives a slot with walls perpendicular to the chord; `angle` gives a V-groove (total opening angle in degrees).
+  - Size: `depth` below the surface (spar notch), or `leave` = material kept at the opposite surface (hinge). Cut from `lower` for a hinge on top, from `upper` for a hinge underneath.
+  - Corners are sync points, and kerf is compensated, so slots come out at the nominal size. A V's tip is reached exactly, so the hinge skin equals `leave` (the wire over-cuts the V's walls slightly near the tip, which a hinge gap allows). A slot narrower than the kerf comes out kerf-wide, and you get a warning.
+- `[panel.sheeting]` cuts the core smaller by the skin thickness, so the sheeted wing has the true airfoil:
+  - `top` / `bottom`: skin on each surface (mm).
+  - `front`: skin over the front zone, both surfaces and round the nose (e.g. a thicker D-box), up to `front_to` (chord fraction, default 0.30). The change from `front` to `top`/`bottom` is a smooth S-curve a few mm long, because a round wire can't follow a sharp inside corner.
+  - `le_cap`: cut the core's nose off flat at this chord fraction, for a solid balsa LE block that you glue on and sand to shape (0 = off: the skin wraps the nose).
+  - `te_stock`: cut the core's tail off flat at this chord fraction, for a balsa TE strip (1 = off: the core runs to the TE, and `te_min_thickness` keeps it from getting too thin where the skins meet).
+  - Slot depths and hinge skins are measured from the core surface.
 - An airfoil can be a `.dat` (Selig or Lednicer) or a `.dxf` (a polyline or line outline; arcs and spline control points are not supported).
 
 ## How it works
@@ -82,7 +91,9 @@ Per panel (SPEC §4):
 6. **Projection** to the towers along the wire line, then a limit check on every point.
 7. **G93 timing**: each segment's time is the longer of the two face segments divided by `feed_cut`, so the faster face cuts at exactly `feed_cut`. Wire-off moves are G94 at `feed_rapid`. The program ends with G94, `M5`, park, `M2`. Numbers have 3 decimals and no exponents.
 
-**Known limitations**: the wire cuts a ruled surface, so a station *inside* a panel is not reproduced (you get a warning; split the panel there). Kerf is per face, not per segment. There is no sheeting offset, and hinge cuts are straight slots, not V-bevels.
+![V-hinge close-up: nominal profile dashed, wire path solid, tower path green](docs/img/v-hinge.png)
+
+**Known limitations**: the wire cuts a ruled surface, so a station *inside* a panel is not reproduced (you get a warning; split the panel there). Kerf is per face, not per segment.
 
 ## Development
 

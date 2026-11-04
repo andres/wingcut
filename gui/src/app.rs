@@ -622,6 +622,7 @@ pub fn new_panel(name: &str, from: f64, to: f64) -> Panel {
             inset: 10.0,
             chord_y: None,
         },
+        sheeting: Default::default(),
         cutouts: Vec::new(),
     }
 }

@@ -98,13 +98,19 @@ impl WingModel {
         self.station_profiles[i].blend(&self.station_profiles[i + 1], f)
     }
 
+    /// The section at `span` scaled by chord, in its own chord frame (LE at
+    /// the origin), with nothing else applied.
+    pub fn scaled_section_at(&self, span: f64) -> Profile {
+        let pf = self.planform_at(span);
+        self.profile_at(span).map(|q| q * pf.chord)
+    }
+
     /// The section at `span` in its own chord frame (mm): LE at (0,0), chord
     /// along +x, scaled by chord and TE thickened to `te_min`, but not yet
     /// twisted or offset. Cutouts are applied in this frame.
     pub fn local_section_at(&self, span: f64, te_min: f64) -> Profile {
-        let pf = self.planform_at(span);
-        let mut p = self.profile_at(span).map(|q| q * pf.chord);
-        enforce_te_min(&mut p, te_min, pf.chord);
+        let mut p = self.scaled_section_at(span);
+        enforce_te_min(&mut p, te_min, self.planform_at(span).chord);
         p
     }
 

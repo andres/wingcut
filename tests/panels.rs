@@ -233,22 +233,65 @@ fn adjacent_panels_share_an_identical_joint_section() {
     }
     // And on the machine: the nominal profile of center-L's tip face equals
     // tip-L's root face up to the block placement (a pure translation).
-    let c = plan(&w, &m, "center-L");
-    let t = plan(&w, &m, "tip-L");
-    let (fa, fb) = (&c.faces[1], &t.faces[0]);
-    assert!(!fa.is_wing_root && fb.is_wing_root);
-    let d = fb.nominal[0] - fa.nominal[0];
-    for (p, q) in fa.nominal.iter().zip(&fb.nominal) {
-        assert!((*p + d).dist(*q) < 1e-9);
+    // With sheeting the two panels sample the joint at slightly different
+    // points (each panel pairs it with its other face), so compare shapes;
+    // without sheeting the points themselves are identical.
+    let unsheeted: String = {
+        let mut skip = false;
+        text.lines()
+            .filter(|l| {
+                if l.starts_with("[panel.sheeting]") {
+                    skip = true;
+                } else if l.starts_with('[') {
+                    skip = false;
+                }
+                !skip
+            })
+            .map(|l| format!("{l}\n"))
+            .collect()
+    };
+    assert!(text.contains("[panel.sheeting]") && !unsheeted.contains("front ="));
+    // A uniform skin: a step between the front and rear skin becomes a
+    // one-segment ramp, which the two panels may place slightly apart.
+    let uniform = text.replace("front = 1.5", "front = 0.6");
+    assert_ne!(uniform, text);
+    for (wing_text, exact) in [(&uniform, false), (&unsheeted, true)] {
+        let w = model(wing_text, &m);
+        for (a, b, ia, ib) in [("center-L", "tip-L", 1, 0), ("center-R", "tip-R", 0, 1)] {
+            let (c, t) = (plan(&w, &m, a), plan(&w, &m, b));
+            let (fa, fb) = (&c.faces[ia], &t.faces[ib]);
+            assert!(!fa.is_wing_root && fb.is_wing_root);
+            let d = fb.nominal[0] - fa.nominal[0];
+            if exact {
+                assert_eq!(fa.nominal.len(), fb.nominal.len());
+                for (p, q) in fa.nominal.iter().zip(&fb.nominal) {
+                    assert!((*p + d).dist(*q) < 1e-9);
+                }
+            } else {
+                for p in &fa.nominal {
+                    let gap = dist_to(&fb.nominal, *p + d);
+                    // Below the machine's step size (1/80 mm).
+                    assert!(gap < 0.01, "{a}/{b}: joint differs by {gap} mm");
+                }
+            }
+        }
     }
-    // Same for the mirrored side.
-    let c = plan(&w, &m, "center-R");
-    let t = plan(&w, &m, "tip-R");
-    let (fa, fb) = (&c.faces[0], &t.faces[1]);
-    let d = fb.nominal[0] - fa.nominal[0];
-    for (p, q) in fa.nominal.iter().zip(&fb.nominal) {
-        assert!((*p + d).dist(*q) < 1e-9);
-    }
+}
+
+/// Distance from `q` to the polyline `line`.
+fn dist_to(line: &[P2], q: P2) -> f64 {
+    line.windows(2)
+        .map(|s| {
+            let (a, b) = (s[0], s[1]);
+            let ab = b - a;
+            let t = if ab.dot(ab) > 0.0 {
+                ((q - a).dot(ab) / ab.dot(ab)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            q.dist(a + ab * t)
+        })
+        .fold(f64::MAX, f64::min)
 }
 
 #[test]
@@ -460,11 +503,36 @@ fn invariants_hold_across_random_wings() {
             );
         }
         if rng.next() < 0.6 {
+            // Hinge from either side, as a slot or a V.
+            let surface = if rng.next() < 0.5 { "lower" } else { "upper" };
+            let shape = if rng.next() < 0.5 {
+                format!("width = {}", rng.range(0.5, 2.0))
+            } else {
+                format!("angle = {}", rng.range(20.0, 40.0))
+            };
             cutouts += &format!(
-                "[[panel.cutout]]\nsurface = \"lower\"\nx = {}\nwidth = {}\nleave = {}\n",
-                rng.range(0.65, 0.8),
-                rng.range(0.5, 2.0),
+                "[[panel.cutout]]\nsurface = \"{surface}\"\nx = {}\n{shape}\nleave = {}\n",
+                rng.range(0.65, 0.78),
                 rng.range(0.3, 1.0)
+            );
+        }
+        if rng.next() < 0.6 {
+            cutouts += &format!(
+                "[panel.sheeting]\ntop = {}\nbottom = {}\nfront = {}\nfront_to = {}\nle_cap = {}\nte_stock = {}\n",
+                rng.range(0.0, 1.0),
+                rng.range(0.0, 1.0),
+                rng.range(0.0, 1.5),
+                rng.range(0.1, 0.4),
+                if rng.next() < 0.3 {
+                    rng.range(0.01, 0.05)
+                } else {
+                    0.0
+                },
+                if rng.next() < 0.3 {
+                    rng.range(0.85, 0.95)
+                } else {
+                    1.0
+                },
             );
         }
         let wing = format!(
@@ -496,6 +564,9 @@ block = {{ s_root = {s_root}, x0 = 100, y0 = 0, height = 200, width = 600 }}
             dh = rng.range(-60.0, 60.0),
             pv = rng.range(0.0, 1.0),
         );
+        if std::env::var("DUMP_CASE").ok().as_deref() == Some(&case.to_string()) {
+            eprintln!("{wing}");
+        }
         let w = model(&wing, &m);
         let p = plan(&w, &m, "p");
         let n_path = p.faces[0].path.len();
@@ -539,6 +610,15 @@ block = {{ s_root = {s_root}, x0 = 100, y0 = 0, height = 200, width = 600 }}
             })
             .collect();
         assert_eq!(cuts.len(), segs.len(), "case {case}");
+        // Slots narrower than the kerf may pause one face for a segment or
+        // two (the planner warns about those); anything else must not.
+        if !p
+            .warnings
+            .iter()
+            .any(|w| w.contains("narrower than the kerf"))
+        {
+            assert_eq!(one_sided_pauses(&p), 0, "case {case}");
+        }
         for (t, (la, lb)) in cuts.iter().zip(&segs) {
             assert!(t.is_finite() && *t > 0.0, "case {case}");
             assert!((la.max(*lb) / t - m.feed_cut).abs() < 1e-6, "case {case}");
@@ -552,8 +632,18 @@ fn assert_no_self_intersection(v: &[P2], case: usize) {
         for j in i + 2..v.len() - 1 {
             if let Some(x) = seg_intersect(v[i], v[i + 1], v[j], v[j + 1]) {
                 // Touching at a shared (collapsed) vertex is fine.
-                let shared = [v[i + 1], v[j]].iter().any(|q| q.dist(x) < 1e-9);
-                assert!(shared, "case {case}: kerfed path crosses itself at {i}/{j}");
+                // (With TE stock the path also starts and ends at one point.)
+                let shared = [v[i], v[i + 1], v[j], v[j + 1]]
+                    .iter()
+                    .any(|q| q.dist(x) < 1e-9);
+                assert!(
+                    shared,
+                    "case {case}: kerfed path crosses itself at {i}/{j}: {:?} {:?} / {:?} {:?}",
+                    v[i],
+                    v[i + 1],
+                    v[j],
+                    v[j + 1]
+                );
             }
         }
     }
@@ -610,4 +700,69 @@ fn impossible_cutout_is_an_error_naming_the_panel() {
         err.contains("panel \"mid\"") && err.contains("goes through the section"),
         "{err}"
     );
+}
+
+#[test]
+fn v_hinge_wire_stops_half_a_kerf_short_of_the_apex() {
+    let m = machine("");
+    let wing = RECT.replace(
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }",
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }\n[[panel.cutout]]\nsurface = \"lower\"\nx = 0.75\nangle = 30\nleave = 0.5",
+    );
+    let w = model(&wing, &m);
+    let p = plan(&w, &m, "mid");
+    for f in &p.faces {
+        // The apex is the highest point of the lower surface's V.
+        let j = (1..f.nominal.len() - 1)
+            .find(|&i| {
+                let (a, b, c) = (f.nominal[i - 1], f.nominal[i], f.nominal[i + 1]);
+                b.y > a.y + 1.0 && b.y > c.y + 1.0
+            })
+            .expect("an apex");
+        let d = f.kerfed[j].dist(f.nominal[j]);
+        assert!((d - f.kerf / 2.0).abs() < 1e-9, "{d}");
+        assert!(f.kerfed[j].y < f.nominal[j].y, "wire is inside the groove");
+    }
+}
+
+#[test]
+fn sheeting_shrinks_the_core_and_keeps_faces_in_sync() {
+    let m = machine("");
+    let base = RECT.replace(
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }",
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }\n[panel.sheeting]\ntop = 1.0\nbottom = 0.8\nfront = 1.5\nle_cap = 0.02\nte_stock = 0.9",
+    );
+    let (bare, sheeted) = (model(RECT, &m), model(&base, &m));
+    let (a, b) = (plan(&bare, &m, "mid"), plan(&sheeted, &m, "mid"));
+    let area = |v: &[P2]| wingcut::geom::signed_area(v).abs();
+    assert!(area(&b.faces[0].nominal) < area(&a.faces[0].nominal) * 0.9);
+    assert_eq!(b.faces[0].path.len(), b.faces[1].path.len());
+    // Rectangular wing: both towers still identical.
+    assert_paths_eq(&b.root_tower, &b.tip_tower, 1e-9);
+}
+
+/// Count segments where one face moves and the other stands still (the
+/// still end of the wire would dwell and over-melt).
+fn one_sided_pauses(p: &CutPlan) -> usize {
+    let (a, b) = (&p.faces[0].path, &p.faces[1].path);
+    (0..a.len() - 1)
+        .filter(|&i| (a[i].dist(a[i + 1]) < 1e-9) != (b[i].dist(b[i + 1]) < 1e-9))
+        .count()
+}
+
+#[test]
+fn example_panels_never_pause_one_end_of_the_wire() {
+    let m = Machine::load(&examples().join("machine.toml")).unwrap();
+    let w = WingModel::new(
+        Wing::load(&examples().join("wing.toml")).unwrap(),
+        m.max_segment,
+    )
+    .unwrap();
+    for name in ["center-L", "tip-L", "center-R", "tip-R"] {
+        let p = plan(&w, &m, name);
+        assert_eq!(one_sided_pauses(&p), 0, "{name}");
+        for f in &p.faces {
+            assert!(f.speed_min > 0.0, "{name}: a face stands still somewhere");
+        }
+    }
 }
