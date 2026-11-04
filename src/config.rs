@@ -1,10 +1,10 @@
 //! `machine.toml` and `wing.toml` definitions.
 
 use anyhow::{Context, Result, bail, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Machine {
     /// Wire-contact to wire-contact distance between the towers (mm).
@@ -51,7 +51,7 @@ pub struct Machine {
     pub miter_limit: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
     pub x: [f64; 2],
@@ -67,7 +67,7 @@ impl Default for Limits {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct KerfPoint {
     pub feed: f64,
@@ -122,10 +122,18 @@ impl Machine {
     }
 
     pub fn parse(text: &str) -> Result<Machine> {
-        let mut m: Machine = toml::from_str(text)?;
-        m.kerf.sort_by(|a, b| a.feed.total_cmp(&b.feed));
-        m.validate()?;
-        Ok(m)
+        toml::from_str::<Machine>(text)?.normalized()
+    }
+
+    /// Sort the kerf table and validate. Use this on edited copies.
+    pub fn normalized(mut self) -> Result<Machine> {
+        self.kerf.sort_by(|a, b| a.feed.total_cmp(&b.feed));
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        Ok(toml::to_string_pretty(self)?)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -202,7 +210,7 @@ impl Machine {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Wing {
     pub name: String,
@@ -226,7 +234,7 @@ fn d_units() -> String {
     "mm".into()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Station {
     /// Distance along the half-span from the centreline (mm).
@@ -251,7 +259,7 @@ fn d_pivot() -> f64 {
     0.25
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Side {
     /// Wing root on the root-tower side of the block.
@@ -260,15 +268,46 @@ pub enum Side {
     Right,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Panel {
     pub name: String,
     pub from: f64,
     pub to: f64,
-    pub block: Block,
     #[serde(default = "d_side")]
     pub side: Side,
+    pub block: Block,
+    /// Spar notches and hinge cuts, cut as slots into the section.
+    #[serde(rename = "cutout", default, skip_serializing_if = "Vec::is_empty")]
+    pub cutouts: Vec<Cutout>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Surface {
+    Upper,
+    Lower,
+}
+
+/// A rectangular slot cut into one surface, with walls perpendicular to the
+/// chord line. Same chord fraction on both faces; width and depth in mm, so
+/// a constant-section spar fits along the whole panel.
+///
+/// * Spar notch: `depth` = slot depth below the surface at its centre.
+/// * Hinge cut: `leave` = material left at the opposite surface (the slot
+///   goes almost through, e.g. `leave = 0.5`).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cutout {
+    pub surface: Surface,
+    /// Chord fraction of the slot centre (0 = LE, 1 = TE).
+    pub x: f64,
+    /// Slot width along the chord (mm).
+    pub width: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leave: Option<f64>,
 }
 
 fn d_side() -> Side {
@@ -276,13 +315,14 @@ fn d_side() -> Side {
 }
 
 /// Foam block placement on the machine. All values in mm.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Block {
     /// Span position of the block face nearest the root tower.
     pub s_root: f64,
     /// Block length along the span. Optional; if given it must equal the
     /// panel span (`to - from`), because the block faces are the cut faces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<f64>,
     /// Machine x of the block front face (the side the wire enters).
     pub x0: f64,
@@ -297,6 +337,7 @@ pub struct Block {
     pub inset: f64,
     /// Height of the wing reference line (y = 0) above the block bottom.
     /// Default: centre the panel vertically in the block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chord_y: Option<f64>,
 }
 
@@ -395,6 +436,29 @@ impl Wing {
                 "panel {:?}: block height and width must be > 0",
                 p.name
             );
+            for (i, c) in p.cutouts.iter().enumerate() {
+                let what = format!("panel {:?} cutout {}", p.name, i + 1);
+                for (name, v) in [
+                    ("x", c.x),
+                    ("width", c.width),
+                    ("depth", c.depth.unwrap_or(1.0)),
+                    ("leave", c.leave.unwrap_or(1.0)),
+                ] {
+                    finite(&format!("{what} {name}"), v)?;
+                }
+                ensure!(
+                    c.x > 0.0 && c.x < 1.0,
+                    "{what}: x must be a chord fraction in (0, 1)"
+                );
+                ensure!(c.width > 0.0, "{what}: width must be > 0");
+                match (c.depth, c.leave) {
+                    (Some(d), None) => ensure!(d > 0.0, "{what}: depth must be > 0"),
+                    (None, Some(l)) => ensure!(l >= 0.0, "{what}: leave must be >= 0"),
+                    _ => {
+                        bail!("{what}: set exactly one of depth (spar notch) or leave (hinge cut)")
+                    }
+                }
+            }
             if let Some(l) = b.length {
                 ensure!(
                     (l - (p.to - p.from)).abs() < 0.01,
@@ -405,6 +469,10 @@ impl Wing {
             }
         }
         Ok(())
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        Ok(toml::to_string_pretty(self)?)
     }
 
     pub fn panel(&self, name: &str) -> Result<&Panel> {

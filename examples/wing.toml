@@ -31,6 +31,11 @@ twist_deg = -2.0
 # block: s_root = face nearest the root tower, x0 = block front (wire enters here),
 # y0 = block bottom. side = "left": wing root on the root-tower side;
 # "right" mirrors it (wing root on the tip-tower side).
+#
+# [[panel.cutout]]: a slot with walls perpendicular to the chord, at chord
+# fraction x (same on both faces), width and depth in mm (constant along the
+# panel, so a straight spar fits). Use depth for spar notches, or leave
+# (material kept at the opposite surface) for a hinge cut.
 
 [[panel]]
 name = "center-L"
@@ -39,12 +44,30 @@ to = 1000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 60, width = 300 }
 side = "left"
 
+[[panel.cutout]]          # upper spar cap slot
+surface = "upper"
+x = 0.30
+width = 10
+depth = 2
+
+[[panel.cutout]]          # lower spar cap slot
+surface = "lower"
+x = 0.30
+width = 10
+depth = 2
+
 [[panel]]
 name = "tip-L"
 from = 1000
 to = 2000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 80, width = 300 }
 side = "left"
+
+[[panel.cutout]]          # aileron hinge: cut up from below, keep 0.5 mm at the top
+surface = "lower"
+x = 0.75
+width = 1.5
+leave = 0.5
 
 [[panel]]
 name = "center-R"
@@ -53,9 +76,27 @@ to = 1000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 60, width = 300 }
 side = "right"
 
+[[panel.cutout]]          # upper spar cap slot
+surface = "upper"
+x = 0.30
+width = 10
+depth = 2
+
+[[panel.cutout]]          # lower spar cap slot
+surface = "lower"
+x = 0.30
+width = 10
+depth = 2
+
 [[panel]]
 name = "tip-R"
 from = 1000
 to = 2000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 80, width = 300 }
 side = "right"
+
+[[panel.cutout]]          # aileron hinge: cut up from below, keep 0.5 mm at the top
+surface = "lower"
+x = 0.75
+width = 1.5
+leave = 0.5

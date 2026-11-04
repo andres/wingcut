@@ -26,6 +26,17 @@ pub struct Planform {
     pub twist_pivot: f64,
 }
 
+impl Planform {
+    /// Chord frame → wing coordinates: twist about the pivot, then add the
+    /// sweep and dihedral offsets. Positive twist = nose up, which with x aft
+    /// and y up is a clockwise (negative) rotation.
+    pub fn to_wing(&self, q: P2) -> P2 {
+        let pivot = P2::new(self.twist_pivot * self.chord, 0.0);
+        let shift = P2::new(self.le_offset, self.dihedral_offset);
+        q.rotate_about(pivot, -self.twist_deg.to_radians()) + shift
+    }
+}
+
 impl WingModel {
     pub fn new(wing: Wing, max_segment: f64) -> Result<WingModel> {
         let max_chord = wing.stations.iter().map(|s| s.chord).fold(0.0, f64::max);
@@ -87,19 +98,22 @@ impl WingModel {
         self.station_profiles[i].blend(&self.station_profiles[i + 1], f)
     }
 
+    /// The section at `span` in its own chord frame (mm): LE at (0,0), chord
+    /// along +x, scaled by chord and TE thickened to `te_min`, but not yet
+    /// twisted or offset. Cutouts are applied in this frame.
+    pub fn local_section_at(&self, span: f64, te_min: f64) -> Profile {
+        let pf = self.planform_at(span);
+        let mut p = self.profile_at(span).map(|q| q * pf.chord);
+        enforce_te_min(&mut p, te_min, pf.chord);
+        p
+    }
+
     /// The wing section at `span` in wing coordinates (mm): scaled by chord,
     /// TE thickened to `te_min`, twisted about the pivot, then offset by the
     /// sweep (`le_offset`) and dihedral offsets.
     pub fn section_at(&self, span: f64, te_min: f64) -> Profile {
         let pf = self.planform_at(span);
-        let mut p = self.profile_at(span).map(|q| q * pf.chord);
-        enforce_te_min(&mut p, te_min, pf.chord);
-        // Positive twist = nose up: with x aft and y up that is a clockwise
-        // (negative) rotation about the pivot.
-        let pivot = P2::new(pf.twist_pivot * pf.chord, 0.0);
-        let ang = -pf.twist_deg.to_radians();
-        let shift = P2::new(pf.le_offset, pf.dihedral_offset);
-        p.map(|q| q.rotate_about(pivot, ang) + shift)
+        self.local_section_at(span, te_min).map(|q| pf.to_wing(q))
     }
 
     /// Interior stations strictly inside a panel. A hot wire cuts a ruled

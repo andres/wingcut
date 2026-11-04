@@ -207,6 +207,22 @@ fn g93_segment_times_are_equal_for_both_towers() {
 fn adjacent_panels_share_an_identical_joint_section() {
     let m = machine("");
     let text = std::fs::read_to_string(examples().join("wing.toml")).unwrap();
+    // Cutouts are per panel (spars on the centre, hinge on the tip), so the
+    // shared joint is the outer section: compare without them.
+    let mut in_cutout = false;
+    let text: String = text
+        .lines()
+        .filter(|l| {
+            if l.starts_with("[[panel.cutout]]") {
+                in_cutout = true;
+            } else if l.starts_with('[') {
+                in_cutout = false;
+            }
+            !in_cutout
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert!(!text.contains("surface ="));
     let w = model(&text, &m);
     let te = m.te_min_thickness;
     // Wing-coordinate sections at the joint are bit-identical.
@@ -434,6 +450,23 @@ fn invariants_hold_across_random_wings() {
         let span = rng.range(300.0, 1600.0);
         let s_root = rng.range(0.0, 1600.0 - span);
         let side = if rng.next() < 0.5 { "left" } else { "right" };
+        let mut cutouts = String::new();
+        if rng.next() < 0.6 {
+            cutouts += &format!(
+                "[[panel.cutout]]\nsurface = \"upper\"\nx = {}\nwidth = {}\ndepth = {}\n",
+                rng.range(0.25, 0.4),
+                rng.range(4.0, 10.0),
+                rng.range(0.5, 2.0)
+            );
+        }
+        if rng.next() < 0.6 {
+            cutouts += &format!(
+                "[[panel.cutout]]\nsurface = \"lower\"\nx = {}\nwidth = {}\nleave = {}\n",
+                rng.range(0.65, 0.8),
+                rng.range(0.5, 2.0),
+                rng.range(0.3, 1.0)
+            );
+        }
         let wing = format!(
             r#"
 name = "r"
@@ -456,7 +489,7 @@ from = 0
 to = {span}
 side = "{side}"
 block = {{ s_root = {s_root}, x0 = 100, y0 = 0, height = 200, width = 600 }}
-"#,
+{cutouts}"#,
             t0 = rng.range(-3.0, 3.0),
             t1 = rng.range(-5.0, 3.0),
             le = rng.range(-50.0, 150.0),
@@ -465,7 +498,10 @@ block = {{ s_root = {s_root}, x0 = 100, y0 = 0, height = 200, width = 600 }}
         );
         let w = model(&wing, &m);
         let p = plan(&w, &m, "p");
-        let n_path = 2 * w.n + 1;
+        let n_path = p.faces[0].path.len();
+        if cutouts.is_empty() {
+            assert_eq!(n_path, 2 * w.n + 1, "case {case}");
+        }
         assert_eq!(p.root_tower.len(), n_path, "case {case}");
         assert_eq!(p.tip_tower.len(), n_path);
         for f in &p.faces {
@@ -479,18 +515,34 @@ block = {{ s_root = {s_root}, x0 = 100, y0 = 0, height = 200, width = 600 }}
             );
             assert_no_self_intersection(&f.kerfed, case);
         }
-        let mut k = 0;
-        for mv in &p.moves {
-            if let Move::Cut { minutes, root, tip } = mv {
-                assert!(minutes.is_finite() && *minutes > 0.0, "case {case}");
-                assert!(root.x.is_finite() && tip.y.is_finite());
-                let la = p.faces[0].path[k].dist(p.faces[0].path[k + 1]);
-                let lb = p.faces[1].path[k].dist(p.faces[1].path[k + 1]);
-                assert!((la.max(lb) / minutes - m.feed_cut).abs() < 1e-6);
-                k += 1;
-            }
+        // Segments where both faces stand still (collapsed slits) are
+        // skipped by the planner; every other segment is one G93 move.
+        let fp = &p.faces;
+        let segs: Vec<(f64, f64)> = (0..n_path - 1)
+            .map(|k| {
+                (
+                    fp[0].path[k].dist(fp[0].path[k + 1]),
+                    fp[1].path[k].dist(fp[1].path[k + 1]),
+                )
+            })
+            .filter(|&(la, lb)| la >= 1e-9 || lb >= 1e-9)
+            .collect();
+        let cuts: Vec<f64> = p
+            .moves
+            .iter()
+            .filter_map(|mv| match mv {
+                Move::Cut { minutes, root, tip } => {
+                    assert!(root.x.is_finite() && tip.y.is_finite());
+                    Some(*minutes)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cuts.len(), segs.len(), "case {case}");
+        for (t, (la, lb)) in cuts.iter().zip(&segs) {
+            assert!(t.is_finite() && *t > 0.0, "case {case}");
+            assert!((la.max(*lb) / t - m.feed_cut).abs() < 1e-6, "case {case}");
         }
-        assert_eq!(k, n_path - 1, "case {case}: segments dropped");
     }
 }
 
@@ -505,4 +557,57 @@ fn assert_no_self_intersection(v: &[P2], case: usize) {
             }
         }
     }
+}
+
+#[test]
+fn spar_slot_is_cut_to_size_after_kerf() {
+    let m = machine("");
+    let wing = RECT.replace(
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }",
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }\n[[panel.cutout]]\nsurface = \"upper\"\nx = 0.3\nwidth = 10\ndepth = 3",
+    );
+    let w = model(&wing, &m);
+    let p = plan(&w, &m, "mid");
+    for f in &p.faces {
+        // The slot floor is the one horizontal stretch 3 mm below the top.
+        let floor: Vec<(P2, P2)> = f
+            .kerfed
+            .windows(2)
+            .filter(|s| (s[0].y - s[1].y).abs() < 1e-9 && (s[0].x - s[1].x).abs() > 5.0)
+            .map(|s| (s[0], s[1]))
+            .collect();
+        assert_eq!(floor.len(), 1, "{floor:?}");
+        let (a, b) = floor[0];
+        // Wire path is narrower and shallower by kerf/2 per side, so the
+        // slot in the foam is exactly 10 x 3 mm.
+        assert!(((a.x - b.x).abs() - (10.0 - f.kerf)).abs() < 1e-6);
+        let nominal_floor = f
+            .nominal
+            .windows(2)
+            .find(|s| {
+                (s[0].y - s[1].y).abs() < 1e-9 && ((s[0].x - s[1].x).abs() - 10.0).abs() < 1e-6
+            })
+            .expect("nominal floor");
+        assert!((a.y - (nominal_floor[0].y + f.kerf / 2.0)).abs() < 1e-6);
+    }
+    // Root and tip are identical (rectangular wing), cutout included.
+    assert_paths_eq(&p.root_tower, &p.tip_tower, 1e-9);
+}
+
+#[test]
+fn impossible_cutout_is_an_error_naming_the_panel() {
+    let m = machine("");
+    let wing = RECT.replace(
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }",
+        "block = { s_root = 300, x0 = 100, y0 = 20, height = 60, width = 300 }\n[[panel.cutout]]\nsurface = \"upper\"\nx = 0.3\nwidth = 10\ndepth = 50",
+    );
+    let w = model(&wing, &m);
+    let err = format!(
+        "{:#}",
+        plan_panel(&w, &m, w.wing.panel("mid").unwrap()).unwrap_err()
+    );
+    assert!(
+        err.contains("panel \"mid\"") && err.contains("goes through the section"),
+        "{err}"
+    );
 }

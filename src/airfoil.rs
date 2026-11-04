@@ -9,6 +9,8 @@ use std::path::Path;
 pub enum DatFormat {
     Selig,
     Lednicer,
+    /// Polyline/line/spline outline from a DXF drawing.
+    Dxf,
 }
 
 /// A parsed airfoil, normalised to chord 1 with the LE at (0,0) and the TE
@@ -116,10 +118,29 @@ pub struct Stats {
 }
 
 impl Airfoil {
+    /// Load a `.dat` (Selig or Lednicer) or `.dxf` profile.
     pub fn load(path: &Path) -> Result<Airfoil> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading airfoil {}", path.display()))?;
-        Airfoil::parse(&text).with_context(|| format!("parsing airfoil {}", path.display()))
+        let is_dxf = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dxf"));
+        let parsed = if is_dxf {
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            crate::dxf::profile_points(&text).and_then(|pts| Airfoil::from_dxf_points(name, pts))
+        } else {
+            Airfoil::parse(&text)
+        };
+        parsed.with_context(|| format!("parsing airfoil {}", path.display()))
+    }
+
+    /// Build an airfoil from DXF outline points in airfoil order.
+    pub fn from_dxf_points(name: String, pts: Vec<P2>) -> Result<Airfoil> {
+        let n = pts.len();
+        Airfoil::from_points(name, DatFormat::Dxf, n, pts)
     }
 
     /// Parse Selig (TE → upper → LE → lower → TE) or Lednicer (counts,

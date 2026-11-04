@@ -1,12 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use wingcut::airfoil::{Airfoil, DatFormat};
 use wingcut::config::{Machine, Wing};
 use wingcut::cut::{CutPlan, plan_panel};
-use wingcut::gcode::{self, fmt_minutes};
-use wingcut::svg;
+use wingcut::gcode::fmt_minutes;
+use wingcut::output;
 use wingcut::wing::WingModel;
 
 #[derive(Parser)]
@@ -47,7 +47,7 @@ enum Cmd {
         #[command(flatten)]
         job: Job,
     },
-    /// Parse an airfoil .dat file and print its stats
+    /// Parse an airfoil .dat or .dxf file and print its stats
     Info { file: PathBuf },
     /// Print a shell completion script, e.g. `wingcut completions bash > ~/.local/share/bash-completion/completions/wingcut`
     Completions {
@@ -74,13 +74,8 @@ fn run() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Gen { job, out: dir } => {
             let (m, model, plans) = plan(&job)?;
-            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
             for p in &plans {
-                let panel = model.wing.panel(&p.panel)?;
-                let g = dir.join(format!("{}.gcode", p.panel));
-                let s = dir.join(format!("{}.svg", p.panel));
-                write_atomic(&g, &gcode::emit(p, &m, &model.wing.name))?;
-                write_atomic(&s, &svg::emit(p, &m, panel))?;
+                let [g, s] = output::write_panel(&dir, p, &m, &model.wing)?;
                 summary(&mut out, p)?;
                 writeln!(out, "  wrote {} and {}", g.display(), s.display())?;
             }
@@ -101,6 +96,7 @@ fn run() -> Result<()> {
             let fmt = match af.format {
                 DatFormat::Selig => "Selig",
                 DatFormat::Lednicer => "Lednicer",
+                DatFormat::Dxf => "DXF",
             };
             let te = if af.is_open_te() { "open" } else { "closed" };
             writeln!(out, "{}", file.display())?;
@@ -143,16 +139,6 @@ fn plan(job: &Job) -> Result<(Machine, WingModel, Vec<CutPlan>)> {
         .map(|p| plan_panel(&model, &m, p))
         .collect::<Result<Vec<_>>>()?;
     Ok((m, model, plans))
-}
-
-/// Write via a temporary file and rename, so an interrupted run never leaves
-/// a truncated G-code file that could be sent to the machine.
-fn write_atomic(path: &Path, text: &str) -> Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
 }
 
 /// Per-panel summary on stdout; warnings go to stderr.
