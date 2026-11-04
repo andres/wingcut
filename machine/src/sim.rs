@@ -146,6 +146,11 @@ impl Sim {
         self.homed
     }
 
+    /// Simulated time since start (s).
+    pub fn clock(&self) -> f64 {
+        self.clock
+    }
+
     fn say(&mut self, line: &str) {
         self.out.extend(line.trim_end().as_bytes());
         self.out.extend(b"\r\n");

@@ -235,7 +235,6 @@ fn losing_the_link_mid_job_is_reported() {
     let (gcode, m) = example("center-L");
     let (c, sim) = start(1000.0);
     state_is(&c, State::Idle);
-    sim.lock().unwrap().disconnect_at = Some(20.0); // simulated seconds
     c.send(Command::Start(Job::from_gcode(
         "center-L",
         &gcode,
@@ -243,6 +242,13 @@ fn losing_the_link_mid_job_is_reported() {
         m.feed_rapid,
         false,
     )));
+    until(&c, 5.0, |e| matches!(e, Event::JobStarted { .. }));
+    // Drop the link 20 simulated seconds into the job (relative, so slow
+    // CI machines don't drop it before the job starts).
+    {
+        let mut s = sim.lock().unwrap();
+        s.disconnect_at = Some(s.clock() + 20.0);
+    }
     let ev = until(&c, 10.0, |e| matches!(e, Event::Disconnected(_)));
     assert!(
         ev.iter()
