@@ -3,7 +3,7 @@
 
 use crate::app::{App, new_panel, new_wing, relative_to};
 use eframe::egui::{self, DragValue, Grid, RichText, TextEdit, Ui};
-use wingcut::config::{Cutout, KerfPoint, Machine, Side, Surface};
+use wingcut::config::{Cutout, KerfPoint, Machine, Sheeting, Side, Surface};
 
 fn num(ui: &mut Ui, v: &mut f64, speed: f64, suffix: &str) -> bool {
     ui.add(
@@ -354,95 +354,229 @@ fn panels(ui: &mut Ui, app: &mut App) -> bool {
             });
         });
         ui.add_space(6.0);
-        ui.label(RichText::new("Cutouts").strong())
-            .on_hover_text("Slots with walls perpendicular to the chord. Same chord fraction on both faces; width/depth in mm.");
-        let mut remove = None;
-        Grid::new("cutouts")
-            .num_columns(6)
-            .striped(true)
-            .show(ui, |ui| {
-                for h in ["surface", "x (chord)", "width", "kind", "mm", ""] {
-                    ui.label(RichText::new(h).small().strong());
-                }
-                ui.end_row();
-                for (i, c) in p.cutouts.iter_mut().enumerate() {
-                    ch |= ui
-                        .horizontal(|ui| {
-                            ui.selectable_value(&mut c.surface, Surface::Upper, "upper")
-                                .changed()
-                                | ui.selectable_value(&mut c.surface, Surface::Lower, "lower")
-                                    .changed()
-                        })
-                        .inner;
-                    ch |= ui
-                        .add(
-                            DragValue::new(&mut c.x)
-                                .speed(0.002)
-                                .range(0.0..=1.0)
-                                .max_decimals(3),
-                        )
-                        .changed();
-                    ch |= num(ui, &mut c.width, 0.1, " mm");
-                    let mut spar = c.depth.is_some();
-                    let kind_changed = ui
-                        .horizontal(|ui| {
-                            ui.selectable_value(&mut spar, true, "depth")
-                                .on_hover_text("Spar notch: slot depth")
-                                .changed()
-                                | ui.selectable_value(&mut spar, false, "leave")
-                                    .on_hover_text("Hinge cut: material kept at the other surface")
-                                    .changed()
-                        })
-                        .inner;
-                    if kind_changed {
-                        (c.depth, c.leave) = if spar {
-                            (Some(2.0), None)
-                        } else {
-                            (None, Some(0.5))
-                        };
-                        ch = true;
-                    }
-                    if let Some(d) = c.depth.as_mut().or(c.leave.as_mut()) {
-                        ch |= num(ui, d, 0.05, " mm");
-                    }
-                    if ui.small_button("✖").clicked() {
-                        remove = Some(i);
-                    }
-                    ui.end_row();
-                }
-            });
-        if let Some(i) = remove {
-            p.cutouts.remove(i);
-            ch = true;
-        }
-        ui.horizontal(|ui| {
-            if ui.button("+ spar notch").clicked() {
-                p.cutouts.push(Cutout {
-                    surface: Surface::Upper,
-                    x: 0.3,
-                    width: 10.0,
-                    depth: Some(2.0),
-                    leave: None,
-                });
-                ch = true;
-            }
-            if ui.button("+ hinge cut").clicked() {
-                p.cutouts.push(Cutout {
-                    surface: Surface::Lower,
-                    x: 0.75,
-                    width: 1.5,
-                    depth: None,
-                    leave: Some(0.5),
-                });
-                ch = true;
-            }
-        });
+        ch |= sheeting(ui, &mut p.sheeting);
+        ui.add_space(6.0);
+        ch |= cutouts(ui, &mut p.cutouts);
     } else {
         ui.label("No panels yet.");
     }
     if selected_changed {
         app.dirty = true; // re-plan, but the file itself is unchanged
     }
+    ch
+}
+
+fn sheeting(ui: &mut Ui, sh: &mut Sheeting) -> bool {
+    let mut ch = false;
+    ui.label(RichText::new("Sheeting").strong()).on_hover_text(
+        "Skin glued on the core. The core is cut smaller by these thicknesses so the sheeted wing has the true airfoil. 0 = no skin.",
+    );
+    Grid::new("sheeting").num_columns(2).striped(true).show(ui, |ui| {
+        ch |= row(ui, "Top / bottom skin", "Skin thickness on the upper and lower surface, behind the front zone", |ui| {
+            ui.horizontal(|ui| num(ui, &mut sh.top, 0.05, " mm") | num(ui, &mut sh.bottom, 0.05, " mm")).inner
+        });
+        ch |= row(ui, "Front zone skin", "Skin over the front zone, top and bottom and around the nose (e.g. a thicker D-box). 0 = none.", |ui| {
+            ui.horizontal(|ui| {
+                let c = num(ui, &mut sh.front, 0.05, " mm");
+                ui.label("up to");
+                c | ui
+                    .add(DragValue::new(&mut sh.front_to).speed(0.005).range(0.0..=1.0).max_decimals(3))
+                    .on_hover_text("Chord fraction where the front zone ends (0.30 = 30 %)")
+                    .changed()
+            })
+            .inner
+        });
+        ch |= row(ui, "LE block", "Solid balsa leading edge: the core's nose is cut off flat at this chord fraction, and a balsa block is glued on and sanded to shape.", |ui| {
+            fraction_toggle(ui, &mut sh.le_cap, 0.0, 0.03, "none (skin wraps the nose)")
+        });
+        ch |= row(ui, "TE stock", "Balsa trailing edge: the core is cut off flat at this chord fraction and a balsa TE strip is glued on.", |ui| {
+            fraction_toggle(ui, &mut sh.te_stock, 1.0, 0.9, "none (core runs to the TE)")
+        });
+    });
+    ch
+}
+
+/// A chord fraction that can be switched off (`off` value) or set.
+fn fraction_toggle(ui: &mut Ui, v: &mut f64, off: f64, default_on: f64, off_text: &str) -> bool {
+    ui.horizontal(|ui| {
+        let mut on = *v != off;
+        let text = if on { "at" } else { off_text };
+        let mut c = ui.checkbox(&mut on, text).changed();
+        if c {
+            *v = if on { default_on } else { off };
+        }
+        if on {
+            c |= ui
+                .add(
+                    DragValue::new(v)
+                        .speed(0.002)
+                        .range(0.0..=1.0)
+                        .max_decimals(3)
+                        .suffix(" of chord"),
+                )
+                .changed();
+        }
+        c
+    })
+    .inner
+}
+
+fn cutouts(ui: &mut Ui, cuts: &mut Vec<Cutout>) -> bool {
+    let mut ch = false;
+    ui.label(RichText::new("Cutouts").strong()).on_hover_text(
+        "Slots and V-grooves cut into the core. Same chord fraction on both faces; sizes in mm. A hinge cut comes in from one surface and leaves a thin skin at the other, where the hinge is.",
+    );
+    let mut remove = None;
+    Grid::new("cutouts")
+        .num_columns(7)
+        .striped(true)
+        .show(ui, |ui| {
+            for h in ["cut from", "x (chord)", "shape", "", "size", "", ""] {
+                ui.label(RichText::new(h).small().strong());
+            }
+            ui.end_row();
+            for (i, c) in cuts.iter_mut().enumerate() {
+                ch |= ui
+                    .horizontal(|ui| {
+                        ui.selectable_value(&mut c.surface, Surface::Upper, "upper")
+                            .on_hover_text(
+                                "Cut from the upper surface (a hinge is then on the bottom)",
+                            )
+                            .changed()
+                            | ui.selectable_value(&mut c.surface, Surface::Lower, "lower")
+                                .on_hover_text(
+                                    "Cut from the lower surface (a hinge is then on top)",
+                                )
+                                .changed()
+                    })
+                    .inner;
+                ch |= ui
+                    .add(
+                        DragValue::new(&mut c.x)
+                            .speed(0.002)
+                            .range(0.0..=1.0)
+                            .max_decimals(3),
+                    )
+                    .changed();
+                // Shape: slot (width) or V-groove (angle).
+                let mut v = c.angle.is_some();
+                let shape_changed = ui
+                    .horizontal(|ui| {
+                        ui.selectable_value(&mut v, false, "slot")
+                            .on_hover_text("Rectangular slot")
+                            .changed()
+                            | ui.selectable_value(&mut v, true, "V")
+                                .on_hover_text("V-groove: lets an aileron deflect")
+                                .changed()
+                    })
+                    .inner;
+                if shape_changed {
+                    (c.width, c.angle) = if v {
+                        (None, Some(30.0))
+                    } else {
+                        (Some(1.5), None)
+                    };
+                    ch = true;
+                }
+                match (c.width.as_mut(), c.angle.as_mut()) {
+                    (Some(w), _) => {
+                        ch |= ui
+                            .add(
+                                DragValue::new(w)
+                                    .speed(0.1)
+                                    .suffix(" mm wide")
+                                    .max_decimals(2),
+                            )
+                            .changed()
+                    }
+                    (None, Some(a)) => {
+                        ch |= ui
+                            .add(
+                                DragValue::new(a)
+                                    .speed(0.5)
+                                    .range(1.0..=170.0)
+                                    .suffix("° open")
+                                    .max_decimals(1),
+                            )
+                            .on_hover_text("Total opening angle; about twice the aileron throw")
+                            .changed()
+                    }
+                    _ => {
+                        ui.label("");
+                    }
+                }
+                // Depth from the cut surface, or skin left at the other surface.
+                let mut spar = c.depth.is_some();
+                let kind_changed = ui
+                    .horizontal(|ui| {
+                        ui.selectable_value(&mut spar, true, "depth")
+                            .on_hover_text("Spar notch: depth below the cut surface")
+                            .changed()
+                            | ui.selectable_value(&mut spar, false, "leave")
+                                .on_hover_text("Hinge: material kept at the other surface")
+                                .changed()
+                    })
+                    .inner;
+                if kind_changed {
+                    (c.depth, c.leave) = if spar {
+                        (Some(2.0), None)
+                    } else {
+                        (None, Some(0.5))
+                    };
+                    ch = true;
+                }
+                if let Some(d) = c.depth.as_mut().or(c.leave.as_mut()) {
+                    ch |= num(ui, d, 0.05, " mm");
+                } else {
+                    ui.label("");
+                }
+                if ui.small_button("✖").clicked() {
+                    remove = Some(i);
+                }
+                ui.end_row();
+            }
+        });
+    if let Some(i) = remove {
+        cuts.remove(i);
+        ch = true;
+    }
+    ui.horizontal(|ui| {
+        let mut add = |c: Cutout| {
+            cuts.push(c);
+            ch = true;
+        };
+        let base = Cutout {
+            surface: Surface::Upper,
+            x: 0.3,
+            width: Some(10.0),
+            angle: None,
+            depth: Some(2.0),
+            leave: None,
+        };
+        if ui.button("+ spar notch").clicked() {
+            add(base.clone());
+        }
+        if ui.button("+ hinge slot").clicked() {
+            add(Cutout {
+                surface: Surface::Lower,
+                x: 0.75,
+                width: Some(1.5),
+                depth: None,
+                leave: Some(0.5),
+                ..base.clone()
+            });
+        }
+        if ui.button("+ hinge V").clicked() {
+            add(Cutout {
+                surface: Surface::Lower,
+                x: 0.75,
+                width: None,
+                angle: Some(30.0),
+                depth: None,
+                leave: Some(0.5),
+            });
+        }
+    });
     ch
 }
 

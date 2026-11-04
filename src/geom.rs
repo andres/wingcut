@@ -99,8 +99,19 @@ pub fn seg_intersect(a0: P2, a1: P2, b0: P2, b1: P2) -> Option<P2> {
 /// assert!((out[1].x - 10.5).abs() < 1e-12 && (out[1].y + 0.5).abs() < 1e-12); // miter
 /// ```
 pub fn offset_polyline(pts: &[P2], d: f64, miter_limit: f64) -> Vec<P2> {
+    if d == 0.0 {
+        return pts.to_vec();
+    }
+    offset_polyline_var(pts, &vec![d; pts.len()], miter_limit)
+}
+
+/// Like [`offset_polyline`], with a separate offset distance per point
+/// (same sign convention). A step in `d` between neighbours gives a step in
+/// the offset line over that one segment.
+pub fn offset_polyline_var(pts: &[P2], d: &[f64], miter_limit: f64) -> Vec<P2> {
     let n = pts.len();
-    if n < 2 || d == 0.0 {
+    assert_eq!(d.len(), n, "one distance per point");
+    if n < 2 {
         return pts.to_vec();
     }
     // Left normals of each segment; zero-length segments inherit a neighbour.
@@ -127,6 +138,7 @@ pub fn offset_polyline(pts: &[P2], d: f64, miter_limit: f64) -> Vec<P2> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let p = pts[i];
+        let d = d[i];
         let off = if i == 0 {
             normals[0] * d
         } else if i == n - 1 {
@@ -279,6 +291,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn variable_offset_steps_between_points() {
+        let pts: Vec<P2> = (0..5).map(|i| P2::new(i as f64, 0.0)).collect();
+        let o = offset_polyline_var(&pts, &[1.0, 1.0, 1.0, 2.0, 2.0], 4.0);
+        let ys: Vec<f64> = o.iter().map(|q| q.y).collect();
+        assert_eq!(ys, vec![1.0, 1.0, 1.0, 2.0, 2.0]);
+        assert_eq!(
+            offset_polyline_var(&pts, &[0.5; 5], 4.0),
+            offset_polyline(&pts, 0.5, 4.0)
+        );
     }
 
     #[test]

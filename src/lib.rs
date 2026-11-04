@@ -31,5 +31,6 @@ pub mod gcode;
 pub mod geom;
 pub mod output;
 pub mod path;
+pub mod sheet;
 pub mod svg;
 pub mod wing;

@@ -32,10 +32,15 @@ twist_deg = -2.0
 # y0 = block bottom. side = "left": wing root on the root-tower side;
 # "right" mirrors it (wing root on the tip-tower side).
 #
-# [[panel.cutout]]: a slot with walls perpendicular to the chord, at chord
-# fraction x (same on both faces), width and depth in mm (constant along the
-# panel, so a straight spar fits). Use depth for spar notches, or leave
-# (material kept at the opposite surface) for a hinge cut.
+# [panel.sheeting]: skin thickness (mm) on top / bottom, and on the front zone
+# (both surfaces, round the nose) up to front_to of the chord. The core is cut
+# smaller by the skin. Optional: le_cap / te_stock cut the core off flat for a
+# balsa LE block / TE strip (chord fractions; 0 / 1 = off).
+#
+# [[panel.cutout]]: cut in from `surface` at chord fraction x (same on both
+# faces), sizes in mm. Shape: width = slot, or angle = V-groove (total opening,
+# in degrees). Size: depth below the surface (spar notch), or leave = material
+# kept at the opposite surface (hinge: cut from "lower" = hinge on top).
 
 [[panel]]
 name = "center-L"
@@ -43,6 +48,12 @@ from = 0
 to = 1000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 60, width = 300 }
 side = "left"
+
+[panel.sheeting]          # D-box: 1.5 mm over the front 30 %, 0.6 mm behind
+top = 0.6
+bottom = 0.6
+front = 1.5
+front_to = 0.30
 
 [[panel.cutout]]          # upper spar cap slot
 surface = "upper"
@@ -63,10 +74,16 @@ to = 2000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 80, width = 300 }
 side = "left"
 
-[[panel.cutout]]          # aileron hinge: cut up from below, keep 0.5 mm at the top
+[panel.sheeting]          # same skin as the centre panels
+top = 0.6
+bottom = 0.6
+front = 1.5
+front_to = 0.30
+
+[[panel.cutout]]          # aileron hinge: V cut up from below, 0.5 mm skin left on top
 surface = "lower"
 x = 0.75
-width = 1.5
+angle = 30
 leave = 0.5
 
 [[panel]]
@@ -75,6 +92,12 @@ from = 0
 to = 1000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 60, width = 300 }
 side = "right"
+
+[panel.sheeting]          # D-box: 1.5 mm over the front 30 %, 0.6 mm behind
+top = 0.6
+bottom = 0.6
+front = 1.5
+front_to = 0.30
 
 [[panel.cutout]]          # upper spar cap slot
 surface = "upper"
@@ -95,8 +118,14 @@ to = 2000
 block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 80, width = 300 }
 side = "right"
 
-[[panel.cutout]]          # aileron hinge: cut up from below, keep 0.5 mm at the top
+[panel.sheeting]          # same skin as the centre panels
+top = 0.6
+bottom = 0.6
+front = 1.5
+front_to = 0.30
+
+[[panel.cutout]]          # aileron hinge: V cut up from below, 0.5 mm skin left on top
 surface = "lower"
 x = 0.75
-width = 1.5
+angle = 30
 leave = 0.5

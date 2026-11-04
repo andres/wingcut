@@ -284,7 +284,10 @@ pub struct Panel {
     #[serde(default = "d_side")]
     pub side: Side,
     pub block: Block,
-    /// Spar notches and hinge cuts, cut as slots into the section.
+    /// Skin thickness and LE/TE options.
+    #[serde(default, skip_serializing_if = "Sheeting::is_default")]
+    pub sheeting: Sheeting,
+    /// Spar notches and hinge cuts.
     #[serde(rename = "cutout", default, skip_serializing_if = "Vec::is_empty")]
     pub cutouts: Vec<Cutout>,
 }
@@ -296,25 +299,93 @@ pub enum Surface {
     Lower,
 }
 
-/// A rectangular slot cut into one surface, with walls perpendicular to the
-/// chord line. Same chord fraction on both faces; width and depth in mm, so
-/// a constant-section spar fits along the whole panel.
+/// A cut into one surface of the core: a rectangular slot (`width`) or a
+/// V-groove (`angle`). Same chord fraction on both faces; sizes in mm, so a
+/// constant-section spar fits along the whole panel.
 ///
-/// * Spar notch: `depth` = slot depth below the surface at its centre.
-/// * Hinge cut: `leave` = material left at the opposite surface (the slot
-///   goes almost through, e.g. `leave = 0.5`).
+/// * Spar notch: slot with `depth` = depth below the surface at its centre.
+/// * Hinge cut: `leave` = material left at the opposite surface, which is
+///   where the hinge is. A slot gives a straight gap; a V (`angle` = total
+///   opening angle) lets the aileron deflect. Cut from `lower` for a hinge
+///   on top, from `upper` for a hinge underneath.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cutout {
+    /// The surface the cut comes in from.
     pub surface: Surface,
-    /// Chord fraction of the slot centre (0 = LE, 1 = TE).
+    /// Chord fraction of the slot centre / V apex (0 = LE, 1 = TE).
     pub x: f64,
-    /// Slot width along the chord (mm).
-    pub width: f64,
+    /// Slot width along the chord (mm). Set this or `angle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    /// V-groove total opening angle (degrees). Set this or `width`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leave: Option<f64>,
+}
+
+/// Skin (sheeting) on the core and how the core ends at the LE and TE.
+/// Thicknesses in mm; the core is cut smaller by them so the finished,
+/// sheeted wing has the true airfoil.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sheeting {
+    /// Skin on the upper surface behind the front zone.
+    #[serde(default)]
+    pub top: f64,
+    /// Skin on the lower surface behind the front zone.
+    #[serde(default)]
+    pub bottom: f64,
+    /// Skin over the front zone, both surfaces, around the nose (e.g. a
+    /// thicker D-box skin). 0 = no skin there. The change to the top/bottom
+    /// skin starts at `front_to` and is a smooth S-curve a few mm long.
+    #[serde(default)]
+    pub front: f64,
+    /// Chord fraction where the front zone ends.
+    #[serde(default = "d_front_to")]
+    pub front_to: f64,
+    /// Chord fraction where the core is cut off flat for a solid balsa LE
+    /// block (0 = none: the core keeps its nose).
+    #[serde(default)]
+    pub le_cap: f64,
+    /// Chord fraction where the core is cut off flat for balsa TE stock
+    /// (1 = none: the core runs to the TE).
+    #[serde(default = "d_one")]
+    pub te_stock: f64,
+}
+
+fn d_front_to() -> f64 {
+    0.30
+}
+fn d_one() -> f64 {
+    1.0
+}
+
+impl Default for Sheeting {
+    fn default() -> Self {
+        Sheeting {
+            top: 0.0,
+            bottom: 0.0,
+            front: 0.0,
+            front_to: d_front_to(),
+            le_cap: 0.0,
+            te_stock: 1.0,
+        }
+    }
+}
+
+impl Sheeting {
+    /// True when there is no skin offset (caps may still be set).
+    pub fn no_skin(&self) -> bool {
+        self.top == 0.0 && self.bottom == 0.0 && self.front == 0.0
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Sheeting::default()
+    }
 }
 
 fn d_side() -> Side {
@@ -453,11 +524,38 @@ impl Wing {
                 "panel {:?}: block height and width must be > 0",
                 p.name
             );
+            let sh = &p.sheeting;
+            for (name, v) in [
+                ("top", sh.top),
+                ("bottom", sh.bottom),
+                ("front", sh.front),
+                ("front_to", sh.front_to),
+                ("le_cap", sh.le_cap),
+                ("te_stock", sh.te_stock),
+            ] {
+                finite(&format!("panel {:?} sheeting {name}", p.name), v)?;
+            }
+            ensure!(
+                sh.top >= 0.0 && sh.bottom >= 0.0 && sh.front >= 0.0,
+                "panel {:?}: sheeting thicknesses must be >= 0",
+                p.name
+            );
+            ensure!(
+                (0.0..=1.0).contains(&sh.front_to),
+                "panel {:?}: sheeting front_to must be a chord fraction in [0, 1]",
+                p.name
+            );
+            ensure!(
+                sh.le_cap >= 0.0 && sh.te_stock <= 1.0 && sh.le_cap < sh.te_stock,
+                "panel {:?}: sheeting needs 0 <= le_cap < te_stock <= 1",
+                p.name
+            );
             for (i, c) in p.cutouts.iter().enumerate() {
                 let what = format!("panel {:?} cutout {}", p.name, i + 1);
                 for (name, v) in [
                     ("x", c.x),
-                    ("width", c.width),
+                    ("width", c.width.unwrap_or(1.0)),
+                    ("angle", c.angle.unwrap_or(1.0)),
                     ("depth", c.depth.unwrap_or(1.0)),
                     ("leave", c.leave.unwrap_or(1.0)),
                 ] {
@@ -467,7 +565,14 @@ impl Wing {
                     c.x > 0.0 && c.x < 1.0,
                     "{what}: x must be a chord fraction in (0, 1)"
                 );
-                ensure!(c.width > 0.0, "{what}: width must be > 0");
+                match (c.width, c.angle) {
+                    (Some(w), None) => ensure!(w > 0.0, "{what}: width must be > 0"),
+                    (None, Some(a)) => ensure!(
+                        a > 0.0 && a < 180.0,
+                        "{what}: angle must be between 0 and 180 degrees"
+                    ),
+                    _ => bail!("{what}: set exactly one of width (slot) or angle (V-groove)"),
+                }
                 match (c.depth, c.leave) {
                     (Some(d), None) => ensure!(d > 0.0, "{what}: depth must be > 0"),
                     (None, Some(l)) => ensure!(l >= 0.0, "{what}: leave must be >= 0"),

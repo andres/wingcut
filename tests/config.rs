@@ -163,3 +163,46 @@ fn cutouts_are_validated() {
         .contains("unknown variant")
     );
 }
+
+#[test]
+fn sheeting_and_v_grooves_are_validated() {
+    let p = panel("from = 0\nto = 1000");
+    let sh = |body: &str| format!("{p}\n[panel.sheeting]\n{body}\n");
+    assert!(wing_err(&sh("top = -1")).contains("thicknesses must be >= 0"));
+    assert!(wing_err(&sh("front = nan")).contains("sheeting front must be a finite"));
+    assert!(wing_err(&sh("front_to = 1.5")).contains("front_to"));
+    assert!(wing_err(&sh("le_cap = 0.5\nte_stock = 0.4")).contains("le_cap < te_stock"));
+    assert!(wing_err(&sh("tops = 1")).contains("unknown field"));
+    let cut = |body: &str| {
+        format!("{p}\n[[panel.cutout]]\nsurface = \"lower\"\nx = 0.75\nleave = 0.5\n{body}\n")
+    };
+    assert!(wing_err(&cut("width = 1\nangle = 30")).contains("exactly one of width"));
+    assert!(wing_err(&cut("angle = 190")).contains("between 0 and 180"));
+    assert!(wing_err(&cut("")).contains("exactly one of width"));
+}
+
+#[test]
+fn sheeting_defaults_and_round_trip() {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let p = panel("from = 0\nto = 1000");
+    let text = format!(
+        "{p}\n[panel.sheeting]\ntop = 1.0\n\n[[panel.cutout]]\nsurface = \"lower\"\nx = 0.75\nangle = 30\nleave = 0.5\n"
+    );
+    let w = Wing::parse(&text, &base).unwrap();
+    let sh = &w.panels[0].sheeting;
+    assert_eq!(
+        (
+            sh.top,
+            sh.bottom,
+            sh.front,
+            sh.front_to,
+            sh.le_cap,
+            sh.te_stock
+        ),
+        (1.0, 0.0, 0.0, 0.30, 0.0, 1.0)
+    );
+    assert_eq!(Wing::parse(&w.to_toml().unwrap(), &base).unwrap(), w);
+    // Unsheeted panels don't write an empty [panel.sheeting] table.
+    let plain = Wing::parse(&panel("from = 0\nto = 1000"), &base).unwrap();
+    assert!(!plain.to_toml().unwrap().contains("sheeting"));
+}

@@ -5,6 +5,7 @@
 use crate::config::{Machine, Panel, Side};
 use crate::geom::{P2, offset_polyline, polyline_len, signed_area};
 use crate::path;
+use crate::sheet;
 use crate::wing::WingModel;
 use anyhow::{Context, Result, bail};
 
@@ -155,15 +156,22 @@ pub fn plan_panel_unchecked(
         Side::Right => (panel.to, panel.from, false),
     };
     let te = m.te_min_thickness;
-    let (sec_lo, sec_hi) = (
-        model.local_section_at(span_lo, te),
-        model.local_section_at(span_hi, te),
-    );
+    let sh = &panel.sheeting;
     let (pf_lo, pf_hi) = (model.planform_at(span_lo), model.planform_at(span_hi));
+    let core = |span: f64, chord: f64| {
+        sheet::core(&model.scaled_section_at(span), chord, sh, te)
+            .with_context(|| format!("panel {:?} at span {span}", panel.name))
+    };
+    let (sec_lo, sec_hi) = (core(span_lo, pf_lo.chord)?, core(span_hi, pf_hi.chord)?);
+    let ends = path::Ends {
+        le_cap: sh.le_cap,
+        te_stock: sh.te_stock,
+    };
     let line = path::build(
         [&sec_lo, &sec_hi],
         [pf_lo.chord, pf_hi.chord],
         &panel.cutouts,
+        ends,
     )
     .with_context(|| format!("panel {:?}", panel.name))?;
     let [lo, hi] = line.faces;
@@ -209,7 +217,31 @@ pub fn plan_panel_unchecked(
         let sign = if signed_area(v) > 0.0 { -1.0 } else { 1.0 };
         offset_polyline(v, sign * kerf / 2.0, m.miter_limit)
     };
-    let (kf_lo, kf_hi) = (offset(&n_lo, k_lo), offset(&n_hi, k_hi));
+    for c in &panel.cutouts {
+        if let Some(w) = c.width
+            && w < k_lo.max(k_hi)
+        {
+            let k = k_lo.max(k_hi);
+            let side = format!("{:?}", c.surface).to_lowercase();
+            warnings.push(format!(
+                "the {side} slot at x = {} is {w} mm wide, narrower than the kerf ({k:.2} mm): it will come out about {k:.2} mm wide",
+                c.x
+            ));
+        }
+    }
+    let (mut kf_lo, mut kf_hi) = (offset(&n_lo, k_lo), offset(&n_hi, k_hi));
+    // V-groove apexes: a round wire can't reach into a sharp inner corner,
+    // and the miter would stop it (k/2)/sin(a/2) short. Put the wire exactly
+    // k/2 from the apex so the groove reaches it (the hinge skin = `leave`);
+    // the walls are over-cut slightly near the tip, which a hinge gap allows.
+    for &j in &line.apexes {
+        for (kf, nom, k) in [(&mut kf_lo, &n_lo, k_lo), (&mut kf_hi, &n_hi, k_hi)] {
+            let open = nom[j - 1].lerp(nom[j + 1], 0.5) - nom[j];
+            if open.len() > 1e-9 {
+                kf[j] = nom[j] + open * (k / 2.0 / open.len());
+            }
+        }
+    }
 
     // Lead-in from in front of the block at TE height, lead-out the same way.
     let x_out = b.x0 - m.lead_clearance;
