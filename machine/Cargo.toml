@@ -1,0 +1,16 @@
+[package]
+name = "wingcut-machine"
+version = "0.1.0"
+edition = "2024"
+description = "Machine control for wingcut: FluidNC/grbl over USB serial or the network, a simulator, and the Riden RD6006 wire supply"
+license = "MIT"
+repository = "https://github.com/andres/wingcut"
+
+[dependencies]
+anyhow = "1.0.104"
+# No libudev: port listing falls back to /sys/class/tty, so Linux builds need no system packages.
+serialport = { version = "4.10.1", default-features = false }
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+wingcut = { path = ".." }

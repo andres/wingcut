@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 wingcut = { path = ".." }
+wingcut-machine = { path = "../machine" }
 anyhow = "1.0.104"
 eframe = { version = "0.37.0", features = ["glow"] }
 egui_plot = "0.38.0"

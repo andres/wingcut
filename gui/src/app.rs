@@ -13,6 +13,7 @@ use wingcut::wing::WingModel;
 pub enum SideTab {
     Wing,
     Machine,
+    Control,
 }
 
 /// An action waiting for "save changes?" to be answered.
@@ -64,6 +65,10 @@ pub struct App {
     pub out_dir: Option<PathBuf>,
     pub status: String,
     pub pending: Option<Pending>,
+    /// Machine control (connection, jog, running cuts).
+    pub control: crate::control::Control,
+    /// Asking whether to stop a running cut before quitting.
+    confirm_stop_quit: bool,
     allow_close: bool,
     title: String,
 }
@@ -92,6 +97,8 @@ impl App {
             out_dir: None,
             status: "Open a wing (File ▸ Open wing…) or edit this new one.".into(),
             pending: None,
+            control: Default::default(),
+            confirm_stop_quit: false,
             allow_close: false,
             title: String::new(),
         };
@@ -288,6 +295,10 @@ impl App {
 
     /// Run `action` now, or ask first if it would lose edits.
     pub fn request(&mut self, action: Pending, ctx: &egui::Context) {
+        if action == Pending::Quit && self.control.running() {
+            self.confirm_stop_quit = true;
+            return;
+        }
         if self.loses_edits(action) {
             self.pending = Some(action);
         } else {
@@ -367,6 +378,30 @@ impl App {
             Some(false) => self.run(action, ctx),
             None => {}
         }
+    }
+
+    fn stop_quit_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_stop_quit {
+            return;
+        }
+        if !self.control.running() {
+            self.confirm_stop_quit = false;
+            return;
+        }
+        egui::Modal::new(egui::Id::unique("stop-quit")).show(ctx, |ui| {
+            ui.heading("A cut is running");
+            ui.label("Quitting stops the cut (hold, then reset: the wire switches off).");
+            ui.horizontal(|ui| {
+                if ui.button("Stop the cut and quit").clicked() {
+                    self.control.stop();
+                    self.control.quit_after_stop = true;
+                    self.confirm_stop_quit = false;
+                }
+                if ui.button("Keep cutting").clicked() {
+                    self.confirm_stop_quit = false;
+                }
+            });
+        });
     }
 
     // ---- frame ----------------------------------------------------------
@@ -537,12 +572,20 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.allow_close
-            && self.loses_edits(Pending::Quit)
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(Pending::Quit);
+        let machine = self.machine.clone();
+        let job_ended = self.control.poll(&ctx, &machine);
+        if job_ended && self.control.quit_after_stop {
+            self.control.quit_after_stop = false;
+            self.request(Pending::Quit, &ctx);
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
+            if self.control.running() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.confirm_stop_quit = true;
+            } else if self.loses_edits(Pending::Quit) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.pending = Some(Pending::Quit);
+            }
         }
         self.shortcuts(&ctx);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
@@ -558,6 +601,13 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.side_tab, SideTab::Wing, "Wing");
                     ui.selectable_value(&mut self.side_tab, SideTab::Machine, "Machine");
+                    let label = if self.control.connected() {
+                        "Control ●"
+                    } else {
+                        "Control"
+                    };
+                    ui.selectable_value(&mut self.side_tab, SideTab::Control, label)
+                        .on_hover_text("Connect to the machine, jog, run a cut");
                 });
                 ui.separator();
                 egui::ScrollArea::vertical()
@@ -566,12 +616,13 @@ impl eframe::App for App {
                         let changed = match self.side_tab {
                             SideTab::Wing => editors::wing(ui, self),
                             SideTab::Machine => editors::machine(ui, &mut self.machine),
+                            SideTab::Control => crate::control::ui(ui, self),
                         };
                         if changed {
                             self.dirty = true;
                             match self.side_tab {
                                 SideTab::Wing => self.wing_unsaved = true,
-                                SideTab::Machine => self.machine_unsaved = true,
+                                SideTab::Machine | SideTab::Control => self.machine_unsaved = true,
                             }
                         }
                     });
@@ -582,6 +633,8 @@ impl eframe::App for App {
         }
         egui::CentralPanel::default().show(ui, |ui| preview::show(ui, self));
         self.unsaved_dialog(&ctx);
+        crate::control::preflight_dialog(&ctx, &mut self.control);
+        self.stop_quit_dialog(&ctx);
         self.update_title(&ctx);
     }
 }
@@ -734,6 +787,96 @@ mod tests {
         app.machine_unsaved = true;
         app.request(Pending::Quit, &ctx);
         assert_eq!(app.pending, Some(Pending::Quit));
+    }
+
+    /// Poll the control until `done` or time out.
+    fn pump(app: &mut App, ctx: &egui::Context, secs: f64, mut done: impl FnMut(&App) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(app) {
+            assert!(
+                t0.elapsed().as_secs_f64() < secs,
+                "timed out: {}",
+                app.control.message
+            );
+            let m = app.machine.clone();
+            app.control.poll(ctx, &m);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn runs_a_panel_on_the_simulator_with_preflight_checks() {
+        use crate::control::{Check, selected_job};
+        use wingcut::config::LinkKind;
+        let ctx = egui::Context::default();
+        let mut app = example();
+        app.machine.connection.kind = LinkKind::Simulator;
+        app.machine.connection.sim_speed = 2000.0;
+        let m = app.machine.clone();
+        app.control.connect(&m);
+        pump(&mut app, &ctx, 5.0, |a| a.control.connected());
+        // Starts in alarm (homing required): the pre-flight check blocks.
+        pump(&mut app, &ctx, 5.0, |a| a.control.status.is_some());
+        let job = selected_job(&app);
+        app.control.prepare(&m, job);
+        let pf = app.control.preflight.take().unwrap();
+        assert!(
+            pf.checks
+                .iter()
+                .any(|(c, t)| *c == Check::Block && t.contains("Alarm"))
+        );
+        // Home, then everything passes (the sim homes in front of the block).
+        app.control.home();
+        pump(&mut app, &ctx, 5.0, |a| a.control.homed);
+        pump(&mut app, &ctx, 5.0, |a| {
+            a.control
+                .status
+                .as_ref()
+                .is_some_and(|s| s.state == wingcut_machine::grbl::State::Idle)
+        });
+        let job = selected_job(&app);
+        app.control.prepare(&m, job);
+        let pf = app.control.preflight.as_ref().unwrap();
+        assert!(
+            !pf.checks.iter().any(|(c, _)| *c == Check::Block),
+            "{:?}",
+            pf.checks.iter().map(|c| &c.1).collect::<Vec<_>>()
+        );
+        app.control.start_prepared();
+        pump(&mut app, &ctx, 10.0, |a| a.control.running());
+        pump(&mut app, &ctx, 30.0, |a| !a.control.running());
+        assert!(
+            app.control.message.contains("finished"),
+            "{}",
+            app.control.message
+        );
+    }
+
+    #[test]
+    fn preflight_blocks_when_the_wire_is_behind_the_block() {
+        use crate::control::{Check, selected_job};
+        use wingcut::config::LinkKind;
+        let ctx = egui::Context::default();
+        let mut app = example();
+        app.machine.connection.kind = LinkKind::Simulator;
+        app.machine.connection.sim_speed = 2000.0;
+        let m = app.machine.clone();
+        app.control.connect(&m);
+        pump(&mut app, &ctx, 5.0, |a| a.control.connected());
+        app.control.home();
+        pump(&mut app, &ctx, 5.0, |a| a.control.homed);
+        app.control.jog(&[('X', 300.0), ('Z', 300.0)], 2000.0);
+        pump(&mut app, &ctx, 5.0, |a| {
+            a.control.mpos.as_ref().is_some_and(|p| p[0] >= 300.0)
+        });
+        let job = selected_job(&app);
+        app.control.prepare(&m, job);
+        let pf = app.control.preflight.as_ref().unwrap();
+        assert!(
+            pf.checks
+                .iter()
+                .any(|(c, t)| *c == Check::Block && t.contains("not in front of the block"))
+        );
     }
 
     #[test]

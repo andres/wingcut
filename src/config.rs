@@ -49,6 +49,91 @@ pub struct Machine {
     /// Miter limit for the kerf offset, as a multiple of kerf/2.
     #[serde(default = "d_miter")]
     pub miter_limit: f64,
+    /// How to reach the controller (machine control).
+    #[serde(default, skip_serializing_if = "Connection::is_default")]
+    pub connection: Connection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkKind {
+    /// USB serial.
+    Serial,
+    /// FluidNC's WebSocket over Wi-Fi.
+    Websocket,
+    /// FluidNC's telnet (raw TCP) over Wi-Fi.
+    Telnet,
+    /// Built-in simulated board.
+    Simulator,
+}
+
+/// Controller connection settings.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Connection {
+    #[serde(default = "d_kind")]
+    pub kind: LinkKind,
+    /// Serial port, e.g. `/dev/ttyUSB0` or `COM3`.
+    #[serde(default)]
+    pub port: String,
+    #[serde(default = "d_baud")]
+    pub baud: u32,
+    /// Board hostname or IP for Wi-Fi.
+    #[serde(default = "d_host")]
+    pub host: String,
+    #[serde(default = "d_ws_port")]
+    pub websocket_port: u16,
+    #[serde(default = "d_telnet_port")]
+    pub telnet_port: u16,
+    /// Controller RX buffer to fill when streaming (bytes).
+    #[serde(default = "d_rx_buffer")]
+    pub rx_buffer: usize,
+    /// Simulator speed-up (1 = real time).
+    #[serde(default = "d_sim_speed")]
+    pub sim_speed: f64,
+}
+
+fn d_kind() -> LinkKind {
+    LinkKind::Serial
+}
+fn d_baud() -> u32 {
+    115200
+}
+fn d_host() -> String {
+    "fluidnc.local".into()
+}
+fn d_ws_port() -> u16 {
+    81
+}
+fn d_telnet_port() -> u16 {
+    23
+}
+fn d_rx_buffer() -> usize {
+    127
+}
+fn d_sim_speed() -> f64 {
+    1.0
+}
+
+impl Default for Connection {
+    fn default() -> Self {
+        Connection {
+            kind: d_kind(),
+            port: String::new(),
+            baud: d_baud(),
+            host: d_host(),
+            websocket_port: d_ws_port(),
+            telnet_port: d_telnet_port(),
+            rx_buffer: d_rx_buffer(),
+            sim_speed: d_sim_speed(),
+        }
+    }
+}
+
+impl Connection {
+    pub fn is_default(&self) -> bool {
+        *self == Connection::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -187,6 +272,14 @@ impl Machine {
             "te_min_thickness must be >= 0"
         );
         ensure!(self.miter_limit >= 1.0, "miter_limit must be >= 1");
+        let c = &self.connection;
+        finite("connection.sim_speed", c.sim_speed)?;
+        ensure!(c.baud > 0, "connection.baud must be > 0");
+        ensure!(
+            (16..=10_000).contains(&c.rx_buffer),
+            "connection.rx_buffer must be between 16 and 10000 bytes"
+        );
+        ensure!(c.sim_speed > 0.0, "connection.sim_speed must be > 0");
         for (i, a) in self.axes.iter().enumerate() {
             ensure!(
                 a.len() == 1 && a.chars().all(|c| c.is_ascii_alphabetic()),
