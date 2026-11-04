@@ -203,3 +203,18 @@ fn bad_input_fails_with_exit_1_and_writes_nothing() {
     assert_eq!(r.status.code(), Some(2));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn prints_shell_completions() {
+    for shell in ["bash", "zsh", "fish"] {
+        let r = bin().args(["completions", shell]).output().unwrap();
+        assert!(r.status.success(), "{shell}");
+        let s = String::from_utf8_lossy(&r.stdout);
+        assert!(
+            s.contains("wingcut") && s.contains("gen") && s.contains("machine"),
+            "{shell}"
+        );
+    }
+    let r = bin().args(["completions", "tcsh"]).output().unwrap();
+    assert_eq!(r.status.code(), Some(2));
+}

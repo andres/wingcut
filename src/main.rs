@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use wingcut::airfoil::{Airfoil, DatFormat};
@@ -49,6 +49,11 @@ enum Cmd {
     },
     /// Parse an airfoil .dat file and print its stats
     Info { file: PathBuf },
+    /// Print a shell completion script, e.g. `wingcut completions bash > ~/.local/share/bash-completion/completions/wingcut`
+    Completions {
+        /// bash, zsh, fish, elvish or powershell
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() {
@@ -86,6 +91,9 @@ fn run() -> Result<()> {
                 summary(&mut out, p)?;
             }
             writeln!(out, "ok: {} panel(s) within limits", plans.len())?;
+        }
+        Cmd::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "wingcut", &mut out);
         }
         Cmd::Info { file } => {
             let af = Airfoil::load(&file)?;

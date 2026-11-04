@@ -13,7 +13,7 @@ cargo build --release        # binary: target/release/wingcut
 cargo test
 ```
 
-Dependencies: `serde`, `toml`, `clap`, `anyhow`. Polyline offsetting is written in-house (`src/geom.rs`).
+Dependencies: `serde`, `toml`, `clap`, `clap_complete` (shell completions, approved by the owner), `anyhow`. Polyline offsetting is written in-house (`src/geom.rs`).
 
 ## Use
 
@@ -29,6 +29,9 @@ wingcut check --machine examples/machine.toml --wing examples/wing.toml
 
 # airfoil stats
 wingcut info examples/airfoils/naca2412.dat
+
+# shell completions (bash, zsh, fish, elvish, powershell)
+wingcut completions bash > ~/.local/share/bash-completion/completions/wingcut
 ```
 
 `gen` prints a summary per panel on stdout: path length, min/max/average speed and kerf per face, estimated time and max tower speed. Warnings go to stderr. Every panel is planned before anything is written, so a projected point outside the axis limits (an error naming the tower, axis, value and point) means no files are written at all. Files are written via a temporary file and a rename, so an interrupted run never leaves a truncated G-code file behind. Exit codes: 0 ok, 1 error, 2 usage.
