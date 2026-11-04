@@ -32,14 +32,23 @@ fn four_metre_wing_generates_in_one_command() {
         .output()
         .unwrap();
     assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
-    let stdout = String::from_utf8_lossy(&r.stdout);
-    assert!(!stdout.contains("warning"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        stderr.is_empty(),
+        "the example must generate without warnings: {stderr}"
+    );
     for p in ["center-L", "tip-L", "center-R", "tip-R"] {
         let g = std::fs::read_to_string(out.join(format!("{p}.gcode"))).unwrap();
         check_gcode(&g);
         let s = std::fs::read_to_string(out.join(format!("{p}.svg"))).unwrap();
         assert!(s.starts_with("<svg") && s.trim_end().ends_with("</svg>"));
     }
+    let leftovers: Vec<_> = std::fs::read_dir(&out)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temporary files left behind");
     std::fs::remove_dir_all(&out).unwrap();
 }
 
@@ -117,4 +126,80 @@ fn check_and_single_panel_and_info() {
     assert!(r.status.success());
     let s = String::from_utf8_lossy(&r.stdout);
     assert!(s.contains("NACA 2412") && s.contains("Selig") && s.contains("12.00 %"));
+}
+
+fn temp(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("wingcut-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn warnings_go_to_stderr_and_results_to_stdout() {
+    let dir = temp("warn");
+    let wing = std::fs::read_to_string(ex("wing.toml"))
+        .unwrap()
+        .replace("airfoils/", &format!("{}/", ex("airfoils")))
+        .replace("width = 300", "width = 100");
+    let wing_path = dir.join("wing.toml");
+    std::fs::write(&wing_path, wing).unwrap();
+    let r = bin()
+        .args(["check", "--machine", &ex("machine.toml"), "--wing"])
+        .arg(&wing_path)
+        .output()
+        .unwrap();
+    let (out, err) = (
+        String::from_utf8_lossy(&r.stdout),
+        String::from_utf8_lossy(&r.stderr),
+    );
+    assert!(r.status.success(), "{err}");
+    assert!(
+        err.contains("warning: panel tip-L:") && err.contains("does not fit"),
+        "{err}"
+    );
+    assert!(!out.contains("warning"), "{out}");
+    assert!(out.contains("ok: 4 panel(s)"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn bad_input_fails_with_exit_1_and_writes_nothing() {
+    let dir = temp("bad");
+    let out = dir.join("out");
+    // Limit violation in one panel: no panel may be written.
+    let m = std::fs::read_to_string(ex("machine.toml"))
+        .unwrap()
+        .replace("y = [0, 300]", "y = [40, 300]");
+    let mp = dir.join("machine.toml");
+    std::fs::write(&mp, m).unwrap();
+    let r = bin()
+        .args(["gen", "--machine"])
+        .arg(&mp)
+        .args(["--wing", &ex("wing.toml"), "-o"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert_eq!(r.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        err.starts_with("error: ") && err.contains("axis limit violation"),
+        "{err}"
+    );
+    assert!(!out.exists(), "nothing may be written when any panel fails");
+
+    // Missing files and broken airfoils name the file.
+    let r = bin().args(["info", "/nonexistent/x.dat"]).output().unwrap();
+    assert_eq!(r.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("/nonexistent/x.dat"));
+    let bad = dir.join("bad.dat");
+    std::fs::write(&bad, "junk\n1 0\nfoo bar\n").unwrap();
+    let r = bin().arg("info").arg(&bad).output().unwrap();
+    assert_eq!(r.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("bad.dat"));
+
+    // Usage errors are clap's exit code 2.
+    let r = bin().args(["gen", "--wing", "w.toml"]).output().unwrap();
+    assert_eq!(r.status.code(), Some(2));
+    std::fs::remove_dir_all(&dir).unwrap();
 }

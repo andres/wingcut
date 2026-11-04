@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use wingcut::airfoil::{Airfoil, DatFormat};
 use wingcut::config::{Machine, Wing};
@@ -52,58 +53,68 @@ enum Cmd {
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("error: {e:#}");
-        std::process::exit(1);
+        // `wingcut check | head` closes stdout early; that is not an error.
+        let broken_pipe = e
+            .downcast_ref::<io::Error>()
+            .is_some_and(|io| io.kind() == io::ErrorKind::BrokenPipe);
+        if !broken_pipe {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
     }
 }
 
 fn run() -> Result<()> {
+    let mut out = io::stdout().lock();
     match Cli::parse().cmd {
-        Cmd::Gen { job, out } => {
+        Cmd::Gen { job, out: dir } => {
             let (m, model, plans) = plan(&job)?;
-            std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
             for p in &plans {
                 let panel = model.wing.panel(&p.panel)?;
-                let g = out.join(format!("{}.gcode", p.panel));
-                let s = out.join(format!("{}.svg", p.panel));
-                write(&g, &gcode::emit(p, &m, &model.wing.name))?;
-                write(&s, &svg::emit(p, &m, panel))?;
-                summary(p);
-                println!("  wrote {} and {}", g.display(), s.display());
+                let g = dir.join(format!("{}.gcode", p.panel));
+                let s = dir.join(format!("{}.svg", p.panel));
+                write_atomic(&g, &gcode::emit(p, &m, &model.wing.name))?;
+                write_atomic(&s, &svg::emit(p, &m, panel))?;
+                summary(&mut out, p)?;
+                writeln!(out, "  wrote {} and {}", g.display(), s.display())?;
             }
         }
         Cmd::Check { job } => {
             let (_, _, plans) = plan(&job)?;
             for p in &plans {
-                summary(p);
+                summary(&mut out, p)?;
             }
-            println!("ok: {} panel(s) within limits", plans.len());
+            writeln!(out, "ok: {} panel(s) within limits", plans.len())?;
         }
         Cmd::Info { file } => {
             let af = Airfoil::load(&file)?;
             let st = af.stats();
-            println!("{}", file.display());
-            println!("  name:          {}", af.name);
             let fmt = match af.format {
                 DatFormat::Selig => "Selig",
                 DatFormat::Lednicer => "Lednicer",
             };
-            println!("  format:        {fmt}, {} points", af.n_points);
-            println!(
+            let te = if af.is_open_te() { "open" } else { "closed" };
+            writeln!(out, "{}", file.display())?;
+            writeln!(out, "  name:          {}", af.name)?;
+            writeln!(out, "  format:        {fmt}, {} points", af.n_points)?;
+            writeln!(
+                out,
                 "  max thickness: {:.2} % at {:.1} % chord",
                 st.max_thickness * 100.0,
                 st.max_thickness_x * 100.0
-            );
-            println!(
+            )?;
+            writeln!(
+                out,
                 "  max camber:    {:.2} % at {:.1} % chord",
                 st.max_camber * 100.0,
                 st.max_camber_x * 100.0
-            );
-            let te = if af.is_open_te() { "open" } else { "closed" };
-            println!(
+            )?;
+            writeln!(
+                out,
                 "  trailing edge: {te}, gap {:.3} % chord",
                 af.te_gap * 100.0
-            );
+            )?;
         }
     }
     Ok(())
@@ -118,6 +129,7 @@ fn plan(job: &Job) -> Result<(Machine, WingModel, Vec<CutPlan>)> {
         None => model.wing.panels.iter().collect(),
     };
     anyhow::ensure!(!panels.is_empty(), "the wing defines no [[panel]]s");
+    // Plan every panel before writing anything: one bad panel writes nothing.
     let plans = panels
         .into_iter()
         .map(|p| plan_panel(&model, &m, p))
@@ -125,36 +137,42 @@ fn plan(job: &Job) -> Result<(Machine, WingModel, Vec<CutPlan>)> {
     Ok((m, model, plans))
 }
 
-fn write(path: &Path, text: &str) -> Result<()> {
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+/// Write via a temporary file and rename, so an interrupted run never leaves
+/// a truncated G-code file that could be sent to the machine.
+fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
 }
 
-fn summary(p: &CutPlan) {
-    println!("panel {}:", p.panel);
+/// Per-panel summary on stdout; warnings go to stderr.
+fn summary(out: &mut impl Write, p: &CutPlan) -> Result<()> {
+    writeln!(out, "panel {}:", p.panel)?;
     for f in &p.faces {
-        println!(
+        writeln!(
+            out,
             "  face s={:<7.1} {:<9} path {:7.1} mm  speed {:5.1}..{:5.1} mm/min (avg {:5.1})  kerf {:.2} mm",
             f.s,
-            if f.is_wing_root {
-                "wing root"
-            } else {
-                "wing tip"
-            },
+            f.role(),
             f.path_len,
             f.speed_min,
             f.speed_max,
             f.speed_avg,
             f.kerf
-        );
+        )?;
     }
-    println!(
+    writeln!(
+        out,
         "  time {} (cutting {}), max tower speed {:.0} mm/min, {} moves",
         fmt_minutes(p.total_minutes),
         fmt_minutes(p.cut_minutes),
         p.max_tower_speed,
         p.moves.len()
-    );
+    )?;
     for w in &p.warnings {
-        println!("  warning: {w}");
+        eprintln!("warning: panel {}: {w}", p.panel);
     }
+    Ok(())
 }

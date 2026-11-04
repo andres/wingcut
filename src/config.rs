@@ -129,6 +129,36 @@ impl Machine {
     }
 
     pub fn validate(&self) -> Result<()> {
+        // TOML accepts nan/inf; reject them before any comparison can be fooled.
+        for (name, v) in [
+            ("tower_spacing", self.tower_spacing),
+            ("feed_cut", self.feed_cut),
+            ("feed_rapid", self.feed_rapid),
+            ("preheat_s", self.preheat_s),
+            ("le_dwell_s", self.le_dwell_s),
+            ("te_min_thickness", self.te_min_thickness),
+            ("max_segment", self.max_segment),
+            ("lead_clearance", self.lead_clearance),
+            ("park_x", self.park_x),
+            ("miter_limit", self.miter_limit),
+            ("limits.x[0]", self.limits.x[0]),
+            ("limits.x[1]", self.limits.x[1]),
+            ("limits.y[0]", self.limits.y[0]),
+            ("limits.y[1]", self.limits.y[1]),
+        ] {
+            finite(name, v)?;
+        }
+        for k in &self.kerf {
+            finite("kerf.feed", k.feed)?;
+            finite("kerf.kerf", k.kerf)?;
+        }
+        for (name, cmd) in [("heat_on", &self.heat_on), ("heat_off", &self.heat_off)] {
+            ensure!(
+                !cmd.trim().is_empty()
+                    && cmd.chars().all(|c| c.is_ascii() && !c.is_ascii_control()),
+                "{name} must be one non-empty line of plain ASCII, got {cmd:?}"
+            );
+        }
         ensure!(self.tower_spacing > 0.0, "tower_spacing must be > 0");
         ensure!(self.feed_cut > 0.0, "feed_cut must be > 0");
         ensure!(self.feed_rapid > 0.0, "feed_rapid must be > 0");
@@ -185,6 +215,11 @@ pub struct Wing {
     /// Directory of the wing file; airfoil paths are relative to it.
     #[serde(skip)]
     pub base_dir: PathBuf,
+}
+
+fn finite(name: &str, v: f64) -> Result<()> {
+    ensure!(v.is_finite(), "{name} must be a finite number, got {v}");
+    Ok(())
 }
 
 fn d_units() -> String {
@@ -291,6 +326,35 @@ impl Wing {
     pub fn validate(&mut self) -> Result<()> {
         ensure!(self.units == "mm", "only units = \"mm\" is supported");
         ensure!(self.stations.len() >= 2, "need at least two [[station]]s");
+        for st in &self.stations {
+            for (name, v) in [
+                ("span", st.span),
+                ("chord", st.chord),
+                ("le_offset", st.le_offset),
+                ("dihedral_offset", st.dihedral_offset),
+                ("twist_deg", st.twist_deg),
+                ("twist_pivot", st.twist_pivot),
+            ] {
+                finite(&format!("station {name}"), v)?;
+            }
+        }
+        for p in &self.panels {
+            let b = &p.block;
+            for (name, v) in [
+                ("from", p.from),
+                ("to", p.to),
+                ("block.s_root", b.s_root),
+                ("block.length", b.length.unwrap_or(0.0)),
+                ("block.x0", b.x0),
+                ("block.y0", b.y0),
+                ("block.height", b.height),
+                ("block.width", b.width),
+                ("block.inset", b.inset),
+                ("block.chord_y", b.chord_y.unwrap_or(0.0)),
+            ] {
+                finite(&format!("panel {:?} {name}", p.name), v)?;
+            }
+        }
         self.stations.sort_by(|a, b| a.span.total_cmp(&b.span));
         for w in self.stations.windows(2) {
             ensure!(w[1].span > w[0].span, "two stations at span {}", w[0].span);
@@ -302,7 +366,10 @@ impl Wing {
                 s.span
             );
         }
-        let (lo, hi) = (self.stations[0].span, self.stations.last().unwrap().span);
+        let (lo, hi) = (
+            self.stations[0].span,
+            self.stations[self.stations.len() - 1].span,
+        );
         let mut names = std::collections::HashSet::new();
         for p in &self.panels {
             ensure!(names.insert(&p.name), "duplicate panel name {:?}", p.name);

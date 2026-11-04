@@ -389,3 +389,120 @@ fn le_dwell_is_emitted_at_the_leading_edge() {
         "LE is the most forward point"
     );
 }
+
+#[test]
+fn limit_errors_are_typed_for_callers() {
+    use wingcut::cut::LimitError;
+    let m = machine("limits = { x = [0, 1000], y = [50, 300] }");
+    let w = model(TAPER, &m);
+    let err = plan_panel(&w, &m, w.wing.panel("mid").unwrap()).unwrap_err();
+    let le = err.downcast_ref::<LimitError>().expect("a LimitError");
+    assert_eq!(le.panel, "mid");
+    assert!(!le.violations.is_empty());
+    for v in &le.violations {
+        assert!(v.value < 50.0);
+        assert_eq!(v.limits, [50.0, 300.0]);
+        assert!(matches!(v.axis.as_str(), "Y" | "A"));
+        assert!(v.tower == "root" || v.tower == "tip");
+        assert!(v.index.unwrap() < 2 * w.n + 1);
+    }
+}
+
+/// Small deterministic PRNG so the sweep needs no extra dependency.
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.next()
+    }
+}
+
+/// Invariants that must hold for any sane wing: finite output, sync kept,
+/// faster face at feed_cut, kerf outside the profile, no self-intersection.
+#[test]
+fn invariants_hold_across_random_wings() {
+    let m = machine("max_segment = 1.0\nlimits = { x = [-2000, 3000], y = [-2000, 2000] }");
+    let mut rng = Lcg(42);
+    for case in 0..40 {
+        let (c0, c1) = (rng.range(120.0, 400.0), rng.range(60.0, 400.0));
+        let span = rng.range(300.0, 1600.0);
+        let s_root = rng.range(0.0, 1600.0 - span);
+        let side = if rng.next() < 0.5 { "left" } else { "right" };
+        let wing = format!(
+            r#"
+name = "r"
+[[station]]
+span = 0
+chord = {c0}
+airfoil = "airfoils/naca2412.dat"
+twist_deg = {t0}
+[[station]]
+span = {span}
+chord = {c1}
+airfoil = "airfoils/naca2410.dat"
+le_offset = {le}
+dihedral_offset = {dh}
+twist_deg = {t1}
+twist_pivot = {pv}
+[[panel]]
+name = "p"
+from = 0
+to = {span}
+side = "{side}"
+block = {{ s_root = {s_root}, x0 = 100, y0 = 0, height = 200, width = 600 }}
+"#,
+            t0 = rng.range(-3.0, 3.0),
+            t1 = rng.range(-5.0, 3.0),
+            le = rng.range(-50.0, 150.0),
+            dh = rng.range(-60.0, 60.0),
+            pv = rng.range(0.0, 1.0),
+        );
+        let w = model(&wing, &m);
+        let p = plan(&w, &m, "p");
+        let n_path = 2 * w.n + 1;
+        assert_eq!(p.root_tower.len(), n_path, "case {case}");
+        assert_eq!(p.tip_tower.len(), n_path);
+        for f in &p.faces {
+            assert_eq!(f.path.len(), n_path);
+            assert!(f.path.iter().all(|q| q.x.is_finite() && q.y.is_finite()));
+            assert!(f.kerf > 0.0 && f.speed_avg > 0.0 && f.speed_avg <= m.feed_cut + 1e-9);
+            let area = |v: &[P2]| wingcut::geom::signed_area(v).abs();
+            assert!(
+                area(&f.kerfed) > area(&f.nominal),
+                "case {case}: kerf not outward"
+            );
+            assert_no_self_intersection(&f.kerfed, case);
+        }
+        let mut k = 0;
+        for mv in &p.moves {
+            if let Move::Cut { minutes, root, tip } = mv {
+                assert!(minutes.is_finite() && *minutes > 0.0, "case {case}");
+                assert!(root.x.is_finite() && tip.y.is_finite());
+                let la = p.faces[0].path[k].dist(p.faces[0].path[k + 1]);
+                let lb = p.faces[1].path[k].dist(p.faces[1].path[k + 1]);
+                assert!((la.max(lb) / minutes - m.feed_cut).abs() < 1e-6);
+                k += 1;
+            }
+        }
+        assert_eq!(k, n_path - 1, "case {case}: segments dropped");
+    }
+}
+
+fn assert_no_self_intersection(v: &[P2], case: usize) {
+    use wingcut::geom::seg_intersect;
+    for i in 0..v.len() - 1 {
+        for j in i + 2..v.len() - 1 {
+            if let Some(x) = seg_intersect(v[i], v[i + 1], v[j], v[j + 1]) {
+                // Touching at a shared (collapsed) vertex is fine.
+                let shared = [v[i + 1], v[j]].iter().any(|q| q.dist(x) < 1e-9);
+                assert!(shared, "case {case}: kerfed path crosses itself at {i}/{j}");
+            }
+        }
+    }
+}
