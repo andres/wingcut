@@ -1,0 +1,145 @@
+# 5 m glider: 2500 mm half-span, cut as 3 panels per side (6 blocks).
+# Made with "Split into panels…" (at the stations, longest panel 1250 mm),
+# then block heights, sheeting and cutouts adjusted per panel.
+# Airfoil paths are relative to this file.
+name = "glider-5m"
+units = "mm"
+
+[[station]]               # wing root, at the centreline
+span = 0
+chord = 280
+airfoil = "airfoils/naca2412.dat"
+
+[[station]]               # aileron starts here; slight washout begins
+span = 1500
+chord = 230
+airfoil = "airfoils/naca2412.dat"
+le_offset = 20            # leading edge 20 mm further back (sweep)
+twist_deg = -0.5
+
+[[station]]               # wing tip
+span = 2500
+chord = 150
+airfoil = "airfoils/naca2410.dat"
+le_offset = 60
+dihedral_offset = 60      # tip panel bends up 60 mm (polyhedral)
+twist_deg = -2.0          # washout: tip nose-down
+
+# Inner panels 1 and 2 (0-750, 750-1500): spar caps, D-box skin.
+# Outer panel 3 (1500-2500): rises 60 mm, so it needs a taller block; V hinge.
+
+[[panel]]
+name = "p1-L"
+from = 0
+to = 750
+side = "left"
+block = { s_root = 425, x0 = 100, y0 = 20, height = 60, width = 320 }
+[panel.sheeting]
+top = 0.6
+bottom = 0.6
+front = 1.5
+[[panel.cutout]]
+surface = "upper"
+x = 0.30
+width = 10
+depth = 2
+[[panel.cutout]]
+surface = "lower"
+x = 0.30
+width = 10
+depth = 2
+
+[[panel]]
+name = "p1-R"
+from = 0
+to = 750
+side = "right"
+block = { s_root = 425, x0 = 100, y0 = 20, height = 60, width = 320 }
+[panel.sheeting]
+top = 0.6
+bottom = 0.6
+front = 1.5
+[[panel.cutout]]
+surface = "upper"
+x = 0.30
+width = 10
+depth = 2
+[[panel.cutout]]
+surface = "lower"
+x = 0.30
+width = 10
+depth = 2
+
+[[panel]]
+name = "p2-L"
+from = 750
+to = 1500
+side = "left"
+block = { s_root = 425, x0 = 100, y0 = 20, height = 60, width = 320 }
+[panel.sheeting]
+top = 0.6
+bottom = 0.6
+front = 1.5
+[[panel.cutout]]
+surface = "upper"
+x = 0.30
+width = 10
+depth = 2
+[[panel.cutout]]
+surface = "lower"
+x = 0.30
+width = 10
+depth = 2
+
+[[panel]]
+name = "p2-R"
+from = 750
+to = 1500
+side = "right"
+block = { s_root = 425, x0 = 100, y0 = 20, height = 60, width = 320 }
+[panel.sheeting]
+top = 0.6
+bottom = 0.6
+front = 1.5
+[[panel.cutout]]
+surface = "upper"
+x = 0.30
+width = 10
+depth = 2
+[[panel.cutout]]
+surface = "lower"
+x = 0.30
+width = 10
+depth = 2
+
+[[panel]]
+name = "p3-L"
+from = 1500
+to = 2500
+side = "left"
+block = { s_root = 300, x0 = 100, y0 = 20, height = 110, width = 320 }
+[panel.sheeting]
+top = 0.6
+bottom = 0.6
+front = 1.5
+[[panel.cutout]]
+surface = "lower"
+x = 0.75
+angle = 30
+leave = 0.5
+
+[[panel]]
+name = "p3-R"
+from = 1500
+to = 2500
+side = "right"
+block = { s_root = 300, x0 = 100, y0 = 20, height = 110, width = 320 }
+[panel.sheeting]
+top = 0.6
+bottom = 0.6
+front = 1.5
+[[panel.cutout]]
+surface = "lower"
+x = 0.75
+angle = 30
+leave = 0.5

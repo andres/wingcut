@@ -613,7 +613,7 @@ pub fn selected_job(app: &App) -> Result<(CutPlan, String, Option<f64>), String>
 pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
     let mut changed = false;
     let busy = app.control.running();
-    ui.heading("Connection");
+    crate::help::heading(ui, "Connection", "connection");
     let c = &mut app.machine.connection;
     let editable = !app.control.connected();
     ui.add_enabled_ui(editable, |ui| {
@@ -744,7 +744,10 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
         } else {
             ui.visuals().weak_text_color()
         };
-        ui.label(RichText::new(msg).color(col));
+        // Truncated so long messages never widen the panel; full text on
+        // hover and in the console.
+        ui.add(egui::Label::new(RichText::new(msg).color(col)).truncate())
+            .on_hover_text(msg);
     });
     changed |= riden_ui(ui, app);
     if !app.control.connected() {
@@ -829,7 +832,7 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
 
     // Jog.
     ui.add_space(4.0);
-    ui.label(RichText::new("Jog").strong());
+    crate::help::label(ui, "Jog", "jog", "Move the wire by hand");
     ui.add_enabled_ui(!busy, |ui| {
         ui.horizontal(|ui| {
             for (m, l) in [
@@ -902,7 +905,7 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
 
     // Cut.
     ui.add_space(4.0);
-    ui.label(RichText::new("Cut").strong());
+    crate::help::label(ui, "Cut", "running-a-cut", "");
     let panel_name = app
         .selected_panel()
         .map(|p| p.name.clone())
@@ -961,7 +964,12 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
 
     // Console.
     ui.add_space(4.0);
-    ui.label(RichText::new("Console").strong());
+    crate::help::label(
+        ui,
+        "Console",
+        "console",
+        "Everything the board says; type commands below",
+    );
     egui::ScrollArea::vertical()
         .max_height(160.0)
         .stick_to_bottom(true)
@@ -993,7 +1001,7 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
 fn riden_ui(ui: &mut Ui, app: &mut App) -> bool {
     let mut changed = false;
     ui.separator();
-    ui.heading("Wire supply (Riden)");
+    crate::help::heading(ui, "Wire supply (Riden)", "wire-supply-riden");
     let busy = app.control.running();
     let connected = app.control.riden.is_some();
     let rc = &mut app.machine.riden;
@@ -1091,7 +1099,8 @@ fn riden_ui(ui: &mut Ui, app: &mut App) -> bool {
         } else {
             ui.visuals().weak_text_color()
         };
-        ui.label(RichText::new(&ctl.riden_msg).color(col));
+        ui.add(egui::Label::new(RichText::new(&ctl.riden_msg).color(col)).truncate())
+            .on_hover_text(&ctl.riden_msg);
     });
     if let Some(r) = ctl.reading {
         ui.horizontal(|ui| {

@@ -46,7 +46,9 @@ The SVG preview shows, in machine coordinates: both face profiles (dashed = nomi
 cargo run --release -p wingcut-gui -- examples/wing.toml   # opens examples/machine.toml next to it
 ```
 
-![wingcut GUI: wing and panel editor on the left, live cut preview of both faces and tower paths on the right](docs/img/gui.png)
+![wingcut GUI: wing and panel editor on the left, live cut preview of both faces and tower paths on the right](docs/img/help/overview.png)
+
+**[User guide](docs/help.md)**: every screen and setting explained, a beginner's walkthrough, and a worked 5 m wing (`examples/wing-5m.toml`). In the GUI: **Help** in the menu bar, or the small **?** next to each section.
 
 - **Left:** forms for the wing (stations, panels, block placement, cutouts) and the machine (travel, feeds, heat, kerf table). Hover a label for help. `…` next to an airfoil picks a `.dat` or `.dxf` file.
 - **Centre:** a live preview that re-plans on every edit. It shows both faces (dashed = nominal, solid = with kerf and leads), both tower paths, the block and the axis limits, and turns points outside the limits red. The Planform tab shows the whole half-wing with its panels.
@@ -98,7 +100,7 @@ See the commented [examples/machine.toml](examples/machine.toml) and [examples/w
 - `s` runs from the root tower (0) to the tip tower (`tower_spacing`). `block.s_root` is the block face nearest the root tower. The block length must equal the panel span (`to - from`): the block faces are the cut faces.
 - The wire enters from the block front at `x0` (low x), at trailing-edge height. The profile's trailing edge sits `inset` (default 10 mm) behind the front, and the LE points towards +x. Park the wire in front of the block (x < `x0`) before you start: the program first moves Y/A to the entry height, then X/Z.
 - Vertically, each panel is centred in the block unless you set `block.chord_y` (height of the wing's y = 0 line above the block bottom).
-- `side = "left"` puts the wing root on the root-tower face. `side = "right"` mirrors the panel (wing root on the tip-tower face).
+- `side = "left"` puts the panel's inner end (towards the fuselage) on the root-tower face. `side = "right"` mirrors the panel (inner end on the tip-tower face).
 - Twist is positive nose-up (washout negative), about `twist_pivot` × chord on the chord line. `le_offset` (sweep) is positive aft. `dihedral_offset` is positive up.
 - Axis letters are configurable (`axes = ["X","Y","U","V"]`). Both towers share one set of `limits`.
 - `[[panel.cutout]]` cuts in from `surface` at chord fraction `x`. It is the same fraction on both faces, while the sizes are in mm, so a constant-section spar fits the whole panel.

@@ -29,6 +29,7 @@ pub mod cut;
 pub mod dxf;
 pub mod gcode;
 pub mod geom;
+pub mod layout;
 pub mod output;
 pub mod path;
 pub mod sheet;

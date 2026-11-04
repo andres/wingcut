@@ -222,3 +222,20 @@ fn prints_shell_completions() {
     let r = bin().args(["completions", "tcsh"]).output().unwrap();
     assert_eq!(r.status.code(), Some(2));
 }
+
+#[test]
+fn five_metre_example_checks_clean() {
+    let r = bin()
+        .args([
+            "check",
+            "--machine",
+            &ex("machine.toml"),
+            "--wing",
+            &ex("wing-5m.toml"),
+        ])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(r.status.success() && err.is_empty(), "{err}");
+    assert!(String::from_utf8_lossy(&r.stdout).contains("ok: 6 panel(s)"));
+}
