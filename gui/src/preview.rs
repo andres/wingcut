@@ -148,6 +148,27 @@ fn cut(ui: &mut Ui, app: &App, p: &PreviewData) {
                         .shape(MarkerShape::Circle),
                 );
             }
+            // Live wire position from the machine (root and tip tower).
+            if let Some([r, t]) = app
+                .control
+                .mpos
+                .as_deref()
+                .and_then(|p| crate::control::towers(m, p))
+            {
+                let col = Color32::from_rgb(255, 0, 200);
+                pu.line(
+                    Line::new("wire now", vec![r, t])
+                        .color(col)
+                        .width(1.0)
+                        .style(LineStyle::dashed_dense()),
+                );
+                pu.points(
+                    Points::new("wire now", vec![r, t])
+                        .color(col)
+                        .radius(5.0)
+                        .shape(MarkerShape::Diamond),
+                );
+            }
         });
 }
 

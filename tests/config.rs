@@ -206,3 +206,19 @@ fn sheeting_defaults_and_round_trip() {
     let plain = Wing::parse(&panel("from = 0\nto = 1000"), &base).unwrap();
     assert!(!plain.to_toml().unwrap().contains("sheeting"));
 }
+
+#[test]
+fn connection_settings_default_and_validate() {
+    let m = Machine::parse("").unwrap();
+    assert_eq!(m.connection.baud, 115200);
+    assert_eq!(m.connection.websocket_port, 81);
+    assert!(
+        !m.to_toml().unwrap().contains("connection"),
+        "defaults are not written"
+    );
+    let m = Machine::parse("[connection]\nkind = \"websocket\"\nhost = \"10.0.0.7\"\n").unwrap();
+    assert_eq!(m.connection.kind, wingcut::config::LinkKind::Websocket);
+    assert_eq!(Machine::parse(&m.to_toml().unwrap()).unwrap(), m);
+    assert!(machine_err("[connection]\nrx_buffer = 4").contains("rx_buffer"));
+    assert!(machine_err("[connection]\nkind = \"bluetooth\"").contains("unknown variant"));
+}

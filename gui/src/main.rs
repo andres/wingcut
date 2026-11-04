@@ -5,6 +5,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")] // no console window
 
 mod app;
+mod control;
 mod editors;
 mod preview;
 

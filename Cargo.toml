@@ -9,7 +9,7 @@ keywords = ["cnc", "hotwire", "gcode", "airfoil", "foam"]
 categories = ["command-line-utilities"]
 
 [workspace]
-members = ["gui"]
+members = ["gui", "machine"]
 
 [dependencies]
 anyhow = "1.0.104"
