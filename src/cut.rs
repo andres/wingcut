@@ -4,8 +4,9 @@
 
 use crate::config::{Machine, Panel, Side};
 use crate::geom::{P2, offset_polyline, polyline_len, signed_area};
+use crate::path;
 use crate::wing::WingModel;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 /// Tolerance (mm) on the axis limits, to absorb floating-point noise.
 const LIMIT_TOL: f64 = 1e-9;
@@ -131,12 +132,27 @@ pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPl
     }
 
     // Wing sections on each face (wing coordinates).
-    let root = model.section_at(panel.from, m.te_min_thickness).cut_order();
-    let tip = model.section_at(panel.to, m.te_min_thickness).cut_order();
-    let (lo, hi, lo_is_root) = match panel.side {
-        Side::Left => (root, tip, true),
-        Side::Right => (tip, root, false),
+    // Wing sections on each face: build the cut line (with cutouts) in the
+    // chord frame, then twist and offset into wing coordinates.
+    let (span_lo, span_hi, lo_is_root) = match panel.side {
+        Side::Left => (panel.from, panel.to, true),
+        Side::Right => (panel.to, panel.from, false),
     };
+    let te = m.te_min_thickness;
+    let (sec_lo, sec_hi) = (
+        model.local_section_at(span_lo, te),
+        model.local_section_at(span_hi, te),
+    );
+    let (pf_lo, pf_hi) = (model.planform_at(span_lo), model.planform_at(span_hi));
+    let line = path::build(
+        [&sec_lo, &sec_hi],
+        [pf_lo.chord, pf_hi.chord],
+        &panel.cutouts,
+    )
+    .with_context(|| format!("panel {:?}", panel.name))?;
+    let [lo, hi] = line.faces;
+    let lo: Vec<P2> = lo.into_iter().map(|q| pf_lo.to_wing(q)).collect();
+    let hi: Vec<P2> = hi.into_iter().map(|q| pf_hi.to_wing(q)).collect();
 
     // Place on the machine: LE away from the operator (+x), TE towards the
     // block front at x0 + inset; the wire enters from the front.
@@ -199,10 +215,10 @@ pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPl
     };
     let root_tower = proj(0.0);
     let tip_tower = proj(m.tower_spacing);
-    check_limits(m, &panel.name, &root_tower, &tip_tower, kf_lo.len())?;
+    check_limits(m, &panel.name, &root_tower, &tip_tower, line.le_index)?;
 
     // Moves.
-    let le_idx = model.n; // index of the LE in the lead-in-prefixed path
+    let le_idx = line.le_index + 1; // the path has the lead-in point first
     let mut moves = vec![
         Move::RapidY {
             root: root_tower[0].y,
@@ -343,16 +359,17 @@ fn check_limits(
     panel: &str,
     root: &[P2],
     tip: &[P2],
-    n_profile: usize,
+    le_index: usize,
 ) -> Result<(), LimitError> {
+    let n_path = root.len();
     // `contains` is false for NaN, so non-finite values are violations too.
     let inside = |v: f64, lim: [f64; 2]| (lim[0] - LIMIT_TOL..=lim[1] + LIMIT_TOL).contains(&v);
     let location = |i: usize| -> String {
         if i == 0 {
             "lead-in start".into()
-        } else if i == n_profile + 1 {
+        } else if i == n_path - 1 {
             "lead-out end".into()
-        } else if i - 1 < n_profile.div_ceil(2) {
+        } else if i - 1 <= le_index {
             format!("upper surface point {}", i - 1)
         } else {
             format!("lower surface point {}", i - 1)

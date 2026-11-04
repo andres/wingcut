@@ -132,3 +132,34 @@ fn wing_rejects_unknown_keys_and_units() {
             .contains("units")
     );
 }
+
+#[test]
+fn configs_round_trip_through_toml() {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let m = Machine::load(&base.join("machine.toml")).unwrap();
+    assert_eq!(Machine::parse(&m.to_toml().unwrap()).unwrap(), m);
+    let w = Wing::load(&base.join("wing.toml")).unwrap();
+    let text = w.to_toml().unwrap();
+    assert!(text.contains("[[panel.cutout]]") && text.contains("[[station]]"));
+    assert_eq!(Wing::parse(&text, &base).unwrap(), w);
+}
+
+#[test]
+fn cutouts_are_validated() {
+    let p = panel("from = 0\nto = 1000");
+    let cut = |body: &str| format!("{p}\n[[panel.cutout]]\nsurface = \"upper\"\n{body}\n");
+    assert!(wing_err(&cut("x = 0.3\nwidth = 10")).contains("exactly one of depth"));
+    assert!(
+        wing_err(&cut("x = 0.3\nwidth = 10\ndepth = 2\nleave = 1"))
+            .contains("exactly one of depth")
+    );
+    assert!(wing_err(&cut("x = 1.2\nwidth = 10\ndepth = 2")).contains("chord fraction"));
+    assert!(wing_err(&cut("x = 0.3\nwidth = 0\ndepth = 2")).contains("width must be > 0"));
+    assert!(wing_err(&cut("x = 0.3\nwidth = 10\ndepth = nan")).contains("finite"));
+    assert!(
+        wing_err(&format!(
+            "{p}\n[[panel.cutout]]\nsurface = \"side\"\nx = 0.3\nwidth = 1\ndepth = 1\n"
+        ))
+        .contains("unknown variant")
+    );
+}
