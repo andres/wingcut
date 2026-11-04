@@ -71,7 +71,7 @@ Per panel (SPEC §4):
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-The tests cover every SPEC §8 requirement, config validation (including `nan`/`inf`, which TOML accepts), CLI behaviour, and a randomised sweep of 40 wing shapes. The sweep checks the invariants: sync kept, the faster face at `feed_cut`, kerf on the outside, and no self-intersections. For library use, see the example in `src/lib.rs`. Limit failures carry a typed `cut::LimitError` with every offending point.
+CI runs the same checks on Linux, macOS and Windows. The tests cover every SPEC §8 requirement, config validation (including `nan`/`inf`, which TOML accepts), CLI behaviour, and a randomised sweep of 40 wing shapes. The sweep checks the invariants: sync kept, the faster face at `feed_cut`, kerf on the outside, and no self-intersections. For library use, see the example in `src/lib.rs`. Limit failures carry a typed `cut::LimitError` with every offending point.
 
 ## Licence
 
