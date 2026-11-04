@@ -20,6 +20,7 @@ Needs: a C linker (`build-essential` on Debian/Ubuntu) and a normal desktop (X11
 6. **Save**: File > Save wing as... to a new file (keep the example clean). Close and reopen it.
 7. **Quit guard**: edit something, then File > Quit. You should get *Save changes?*.
 8. **DXF**: on a station, `…` > `examples/airfoils/naca2410.dxf`. The preview should look the same as with the `.dat`.
+9. **Machine control without hardware**: open the **Control** tab, pick **Simulator**, set the speed to 20×, **Connect**, then **Home**. Under Wire supply, tick the box, choose **simulated** and **Connect supply**. Press **Run panel**: the checks should all pass. Start the cut and watch the pink wire marker and the live V/A readout. Try **Pause**, **Resume**, **Break the wire** (the cut should pause by itself) and **STOP**. Save the machine settings with File > Save machine as... if you want to keep them.
 
 ## Using the binaries directly
 

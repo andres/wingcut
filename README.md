@@ -2,7 +2,7 @@
 
 Open-source, Linux-first Rust tool that turns a wing definition (airfoils, chord, sweep, twist, dihedral, panels) into synchronised 4-axis G93 G-code for a DIY CNC hot-wire foam cutter running FluidNC.
 
-Status: **stages 1–3 done**: CLI core, multi-panel wings, and a desktop GUI with sheeting, spar notches, slot and V hinge cuts, and DXF import. Stage 4 (machine control) is not started. See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
+Status: **stages 1–4 built**: CLI core, multi-panel wings, a desktop GUI (sheeting, spar notches, slot and V hinge cuts, DXF import) and machine control (FluidNC over USB or Wi-Fi, Riden wire supply). Stage 4 is tested against simulated hardware only; see [docs/hardware-bringup.md](docs/hardware-bringup.md). See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
 
 > Not yet validated on a real machine or in devSim (SPEC §9). Check every file before cutting.
 
@@ -15,7 +15,7 @@ cargo build --release        # binary: target/release/wingcut
 cargo test
 ```
 
-Dependencies: `serde`, `toml`, `clap`, `clap_complete` (shell completions), `anyhow`. The GUI crate (`gui/`) adds `eframe`, `egui_plot` and `rfd`. All were approved by the owner. Polyline offsetting is written in-house (`src/geom.rs`).
+Dependencies: `serde`, `toml`, `clap`, `clap_complete` (shell completions), `anyhow`. The GUI crate (`gui/`) adds `eframe`, `egui_plot` and `rfd`; the machine crate (`machine/`) adds `serialport` (built without libudev, so Linux needs no extra packages) and `tungstenite`. All were approved by the owner. Polyline offsetting is written in-house (`src/geom.rs`).
 
 ## Use
 
@@ -54,6 +54,40 @@ cargo run --release -p wingcut-gui -- examples/wing.toml   # opens examples/mach
 - **Top:** File menu (open/save wing and machine, Ctrl+S), and **Generate panel / Generate all**, which write the same G-code and SVG as the CLI. Generate refuses to write anything if a panel breaks the limits.
 
 The GUI edits the same TOML files the CLI reads, so you can switch between them freely. On Linux, file dialogs use the desktop portal (`xdg-desktop-portal`); every path can also be typed in directly. Rendering uses wgpu (Vulkan, Metal or DX12) and falls back to plain OpenGL on machines without those, such as old PCs and VMs.
+
+## Machine control (stage 4)
+
+The GUI's **Control** tab runs the machine without GRBL HotWire:
+
+- **Connect** over USB serial, Wi-Fi (FluidNC's telnet or WebSocket), or the built-in **simulator** to try everything without hardware.
+- Machine state, live tower positions (also as a marker on the preview), a wire on/off indicator, Home / Unlock / Reset, and a jog pad for both towers together or one at a time.
+- **Run panel**: plans the selected panel and shows pre-flight checks: machine idle, homed, wire parked in front of the block (the program's first move is vertical), work offset, wire current. A **dry run** traces the cut with the wire cold.
+- While cutting: progress and time left, **Pause** (feed hold, then the wire switches off; Resume switches it on), **STOP** (hold, then reset: the wire switches off), console. Errors and alarms stop the cut and name the line. Quitting during a cut asks first and stops it.
+- **Riden RD60xx** (optional): wingcut sets the voltage limit and the wire current at the start of each cut (a panel can set its own `wire_current`), shows live volts, amps and wire resistance, switches the output off after the cut, and **pauses the cut if the current collapses** (broken wire or lost contact).
+
+Streaming uses grbl character counting (never more than the board's RX buffer in flight). The **E-stop is the primary safety**: if the PC or the cable fails, the board finishes the few moves it has buffered.
+
+Settings live in `machine.toml` (all editable in the GUI):
+
+```toml
+[connection]
+kind = "serial"            # serial | websocket | telnet | simulator
+port = "/dev/ttyUSB0"
+baud = 115200
+host = "fluidnc.local"     # Wi-Fi
+websocket_port = 81
+telnet_port = 23
+rx_buffer = 127
+
+[riden]
+enabled = true
+port = "/dev/ttyUSB1"
+address = 1
+current = 1.8              # A, unless the panel sets wire_current
+max_voltage = 45           # V
+break_detect = true
+break_fraction = 0.5       # pause below 50 % of the set current
+```
 
 ## Config
 

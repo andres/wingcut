@@ -4,15 +4,21 @@
 use crate::app::App;
 use eframe::egui::{self, Color32, ProgressBar, RichText, Ui};
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use wingcut::config::{LinkKind, Machine};
 use wingcut::cut::{CutPlan, plan_panel};
 use wingcut::wing::WingModel;
 use wingcut_machine::grbl::{State, Status};
-use wingcut_machine::{
-    Command, Controller, Event, Job, Link, Options, SerialLink, SimConfig, SimLink, TcpLink, WsLink,
+use wingcut_machine::riden::{
+    BreakDetector, FakeRiden, FakeRidenLink, Reading, RidenCommand, RidenEvent, RidenHandle,
 };
+use wingcut_machine::{
+    Command, Controller, Event, Job, Link, Options, SerialLink, Sim, SimConfig, SimLink, TcpLink,
+    WsLink,
+};
+
+type Opened = Result<(Box<dyn Link>, Option<Arc<Mutex<Sim>>>), String>;
 
 const LOG_LINES: usize = 300;
 
@@ -37,6 +43,8 @@ pub struct JobView {
 pub struct Preflight {
     pub job: Job,
     pub checks: Vec<(Check, String)>,
+    /// Wire current and voltage limit to set on the Riden at start.
+    pub riden: Option<(f64, f64)>,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -48,7 +56,15 @@ pub enum Check {
 
 pub struct Control {
     pub ctl: Option<Controller>,
-    connecting: Option<Receiver<Result<Box<dyn Link>, String>>>,
+    connecting: Option<Receiver<Opened>>,
+    /// The simulated board, when connected to one.
+    pub sim: Option<Arc<Mutex<Sim>>>,
+    pub riden: Option<RidenHandle>,
+    pub riden_model: String,
+    pub reading: Option<Reading>,
+    pub riden_msg: String,
+    pub fake_riden: Option<Arc<Mutex<FakeRiden>>>,
+    detector: BreakDetector,
     pub ports: Vec<String>,
     pub status: Option<Status>,
     pub mpos: Option<Vec<f64>>,
@@ -71,6 +87,13 @@ impl Default for Control {
         Control {
             ctl: None,
             connecting: None,
+            sim: None,
+            riden: None,
+            riden_model: String::new(),
+            reading: None,
+            riden_msg: String::new(),
+            fake_riden: None,
+            detector: BreakDetector::new(0.5),
             ports: wingcut_machine::serial_ports(),
             status: None,
             mpos: None,
@@ -107,8 +130,9 @@ pub fn towers(m: &Machine, mpos: &[f64]) -> Option<[[f64; 2]; 2]> {
     Some([[get(a[0])?, get(a[1])?], [get(a[2])?, get(a[3])?]])
 }
 
-fn open_link(m: &Machine) -> Result<Box<dyn Link>, String> {
+fn open_link(m: &Machine) -> Opened {
     let c = &m.connection;
+    let mut sim = None;
     let r: anyhow::Result<Box<dyn Link>> = match c.kind {
         LinkKind::Serial => {
             if c.port.is_empty() {
@@ -136,10 +160,12 @@ fn open_link(m: &Machine) -> Result<Box<dyn Link>, String> {
                 start: [x[0], y[1], x[0], y[1]],
                 ..SimConfig::default()
             };
-            Ok(Box::new(SimLink::new(cfg).0))
+            let (link, handle) = SimLink::new(cfg);
+            sim = Some(handle);
+            Ok(Box::new(link))
         }
     };
-    r.map_err(|e| format!("{e:#}"))
+    r.map(|l| (l, sim)).map_err(|e| format!("{e:#}"))
 }
 
 impl Control {
@@ -179,10 +205,111 @@ impl Control {
         });
     }
 
-    /// Start the job prepared by [`Control::prepare`].
+    /// Start the job prepared by [`Control::prepare`]. With a Riden, the
+    /// voltage limit and current are set and its output switched on first
+    /// (the board's M3/M5 still switch the wire through the MOSFET).
     pub fn start_prepared(&mut self) {
         if let Some(pf) = self.preflight.take() {
+            if let (Some((amps, volts)), Some(r)) = (pf.riden, &self.riden) {
+                r.send(RidenCommand::SetVoltage(volts));
+                r.send(RidenCommand::SetCurrent(amps));
+                r.send(RidenCommand::Output(true));
+            }
             self.send(Command::Start(pf.job));
+        }
+    }
+
+    /// Resume a paused cut (switching the Riden back on first).
+    pub fn resume(&mut self) {
+        if let Some(r) = &self.riden {
+            r.send(RidenCommand::Output(true));
+        }
+        self.detector = BreakDetector::new(self.detector.fraction);
+        self.send(Command::Resume);
+    }
+
+    fn riden_off(&self) {
+        if let Some(r) = &self.riden {
+            r.send(RidenCommand::Output(false));
+        }
+    }
+
+    pub fn connect_riden(&mut self, ctx: &egui::Context, m: &Machine) {
+        let rc = &m.riden;
+        let link: Box<dyn Link> = if rc.simulated {
+            // The simulated supply only carries current while the
+            // simulated board has the wire on (its MOSFET).
+            let sim = self.sim.clone();
+            let load = Box::new(move || {
+                sim.as_ref()
+                    .is_none_or(|s| s.lock().map(|s| s.wire_on()).unwrap_or(false))
+            });
+            let fake = Arc::new(Mutex::new(FakeRiden::new(load)));
+            fake.lock().expect("new lock").addr = rc.address;
+            self.fake_riden = Some(fake.clone());
+            Box::new(FakeRidenLink(fake))
+        } else {
+            if rc.port.is_empty() {
+                self.riden_msg = "⚠ choose the supply's serial port".into();
+                return;
+            }
+            match SerialLink::open(&rc.port, rc.baud) {
+                Ok(l) => Box::new(l),
+                Err(e) => {
+                    self.riden_msg = format!("⚠ {e:#}");
+                    return;
+                }
+            }
+        };
+        let ctx = ctx.clone();
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
+        self.detector = BreakDetector::new(rc.break_fraction);
+        self.riden = Some(RidenHandle::start(link, rc.address, Some(notify)));
+        self.riden_msg = "connecting…".into();
+    }
+
+    pub fn disconnect_riden(&mut self) {
+        self.riden = None; // drop switches the output off
+        self.fake_riden = None;
+        self.reading = None;
+        self.riden_msg = "disconnected".into();
+    }
+
+    /// Handle supply events; pause the cut if the wire looks broken.
+    fn poll_riden(&mut self, m: &Machine) {
+        let events = self.riden.as_ref().map(|r| r.poll()).unwrap_or_default();
+        for e in events {
+            match e {
+                RidenEvent::Connected { model } => {
+                    self.riden_msg = format!("connected: {model}");
+                    self.riden_model = model;
+                }
+                RidenEvent::Reading(r) => {
+                    self.reading = Some(r);
+                    let cutting = self.job.as_ref().is_some_and(|j| !j.paused);
+                    let wire_on = self
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.spindle)
+                        .is_some_and(|s| s > 0.0);
+                    if cutting && m.riden.break_detect && self.detector.update(&r, wire_on) {
+                        self.send(Command::Pause);
+                        self.riden_off();
+                        self.message = format!(
+                            "⚠ wire current dropped to {:.2} A (set {:.2} A): broken wire or lost contact. Cut paused, wire off. Check the wire, then Resume or STOP.",
+                            r.i_out, r.i_set
+                        );
+                        let msg = self.message.clone();
+                        self.log(msg);
+                    }
+                }
+                RidenEvent::Error(e) => self.riden_msg = format!("⚠ {e}"),
+                RidenEvent::Disconnected(why) => {
+                    self.riden_msg = format!("⚠ supply disconnected: {why}");
+                    self.riden = None;
+                    self.reading = None;
+                }
+            }
         }
     }
 
@@ -197,7 +324,9 @@ impl Control {
     }
 
     pub fn disconnect(&mut self) {
+        self.riden_off();
         self.ctl = None; // drop: stops any job and closes the link
+        self.sim = None;
         self.status = None;
         self.mpos = None;
         self.job = None;
@@ -210,7 +339,8 @@ impl Control {
         let mut job_ended = false;
         if let Some(rx) = &self.connecting {
             match rx.try_recv() {
-                Ok(Ok(link)) => {
+                Ok(Ok((link, sim))) => {
+                    self.sim = sim;
                     let ctx = ctx.clone();
                     let notify: Arc<dyn Fn() + Send + Sync> =
                         Arc::new(move || ctx.request_repaint());
@@ -234,6 +364,7 @@ impl Control {
                 Err(TryRecvError::Disconnected) => self.connecting = None,
             }
         }
+        self.poll_riden(m);
         let events = self.ctl.as_ref().map(|c| c.poll()).unwrap_or_default();
         for e in events {
             match e {
@@ -329,12 +460,20 @@ impl Control {
                 }
             }
         }
+        if job_ended {
+            // Extra safety on top of the board's M5 / reset.
+            self.riden_off();
+        }
         job_ended
     }
 
     /// Build the selected panel's job and the pre-flight checks.
-    pub fn prepare(&mut self, app_machine: &Machine, plan: Result<(CutPlan, String), String>) {
-        let (plan, gcode) = match plan {
+    pub fn prepare(
+        &mut self,
+        app_machine: &Machine,
+        plan: Result<(CutPlan, String, Option<f64>), String>,
+    ) {
+        let (plan, gcode, panel_current) = match plan {
             Ok(p) => p,
             Err(e) => {
                 self.message = format!("⚠ cannot run: {e}");
@@ -405,7 +544,38 @@ impl Control {
                 wingcut::gcode::fmt_minutes(job.total_secs / 60.0)
             ),
         ));
-        self.preflight = Some(Preflight { job, checks });
+        let rc = &app_machine.riden;
+        let riden = if !rc.enabled {
+            checks.push((Check::Ok, "wire current: set on the supply by hand".into()));
+            None
+        } else if self.dry_run {
+            checks.push((Check::Ok, "dry run: the Riden is left alone".into()));
+            None
+        } else if self.riden.is_some() && self.reading.is_some() {
+            let amps = panel_current.unwrap_or(rc.current);
+            let from = if panel_current.is_some() {
+                "panel"
+            } else {
+                "machine"
+            };
+            checks.push((
+                Check::Ok,
+                format!(
+                    "wire current {amps:.2} A ({from} setting), limit {:.0} V: set on the {} at start{}",
+                    rc.max_voltage,
+                    self.riden_model,
+                    if rc.break_detect { "; broken-wire detection on" } else { "" }
+                ),
+            ));
+            Some((amps, rc.max_voltage))
+        } else {
+            checks.push((
+                Check::Block,
+                "the Riden supply is enabled but not connected: connect it under Wire supply, or untick it".into(),
+            ));
+            None
+        };
+        self.preflight = Some(Preflight { job, checks, riden });
     }
 }
 
@@ -420,8 +590,8 @@ fn state_color(s: &State) -> Color32 {
 }
 
 /// Plan the selected panel strictly and emit its G-code.
-pub fn selected_job(app: &App) -> Result<(CutPlan, String), String> {
-    (|| -> anyhow::Result<(CutPlan, String)> {
+pub fn selected_job(app: &App) -> Result<(CutPlan, String, Option<f64>), String> {
+    (|| -> anyhow::Result<(CutPlan, String, Option<f64>)> {
         let m = app.machine.clone().normalized()?;
         let mut w = app.wing.clone();
         w.validate()?;
@@ -431,9 +601,10 @@ pub fn selected_job(app: &App) -> Result<(CutPlan, String), String> {
             .name
             .clone();
         let model = WingModel::new(w, m.max_segment)?;
-        let plan = plan_panel(&model, &m, model.wing.panel(&name)?)?;
+        let panel = model.wing.panel(&name)?;
+        let plan = plan_panel(&model, &m, panel)?;
         let g = wingcut::gcode::emit(&plan, &m, &model.wing.name);
-        Ok((plan, g))
+        Ok((plan, g, panel.wire_current))
     })()
     .map_err(|e| format!("{e:#}"))
 }
@@ -575,6 +746,7 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
         };
         ui.label(RichText::new(msg).color(col));
     });
+    changed |= riden_ui(ui, app);
     if !app.control.connected() {
         if cfg!(target_os = "linux") && machine.connection.kind == LinkKind::Serial {
             ui.label(
@@ -754,10 +926,10 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
         ui.horizontal(|ui| {
             if paused {
                 if ui.button("▶ Resume").clicked() {
-                    app.control.send(Command::Resume);
+                    app.control.resume();
                 }
             } else if ui
-                .button("⏸ Pause")
+                .button("Pause")
                 .on_hover_text("Feed hold, then wire off")
                 .clicked()
             {
@@ -814,6 +986,167 @@ pub fn ui(ui: &mut Ui, app: &mut App) -> bool {
             app.control.send(Command::Send(line));
         }
     });
+    changed
+}
+
+/// "Wire supply (Riden)" section. Returns true if settings changed.
+fn riden_ui(ui: &mut Ui, app: &mut App) -> bool {
+    let mut changed = false;
+    ui.separator();
+    ui.heading("Wire supply (Riden)");
+    let busy = app.control.running();
+    let connected = app.control.riden.is_some();
+    let rc = &mut app.machine.riden;
+    changed |= ui
+        .add_enabled(!connected, egui::Checkbox::new(&mut rc.enabled, "let wingcut set the wire current and watch the wire"))
+        .on_hover_text("RD6006/RD6012/RD6018/RD6024 over its USB port (Modbus). Off: you set the current on the supply by hand.")
+        .changed();
+    if !rc.enabled {
+        return changed;
+    }
+    ui.add_enabled_ui(!connected, |ui| {
+        egui::Grid::new("riden").num_columns(2).show(ui, |ui| {
+            ui.label("Supply");
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .selectable_value(&mut rc.simulated, false, "USB")
+                    .changed();
+                changed |= ui
+                    .selectable_value(&mut rc.simulated, true, "simulated")
+                    .changed();
+            });
+            ui.end_row();
+            if !rc.simulated {
+                ui.label("Port");
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("riden-port")
+                        .selected_text(if rc.port.is_empty() {
+                            "choose…"
+                        } else {
+                            &rc.port
+                        })
+                        .show_ui(ui, |ui| {
+                            for p in &app.control.ports {
+                                changed |=
+                                    ui.selectable_value(&mut rc.port, p.clone(), p).changed();
+                            }
+                        });
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut rc.port)
+                                .desired_width(110.0)
+                                .hint_text("/dev/ttyUSB1"),
+                        )
+                        .changed();
+                });
+                ui.end_row();
+                ui.label("Baud / address");
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut rc.baud).speed(100.0))
+                        .changed();
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut rc.address).range(1..=247))
+                        .changed();
+                });
+                ui.end_row();
+            }
+        });
+    });
+    egui::Grid::new("riden-set").num_columns(2).show(ui, |ui| {
+        ui.label("Wire current").on_hover_text("Default for every panel; a panel can set its own");
+        changed |= ui
+            .add(egui::DragValue::new(&mut rc.current).speed(0.01).range(0.05..=24.0).suffix(" A").max_decimals(3))
+            .changed();
+        ui.end_row();
+        ui.label("Voltage limit");
+        changed |= ui.add(egui::DragValue::new(&mut rc.max_voltage).speed(0.5).range(1.0..=60.0).suffix(" V")).changed();
+        ui.end_row();
+        ui.label("Broken-wire check").on_hover_text("Pause the cut and switch the wire off if the current collapses while the wire should be on");
+        ui.horizontal(|ui| {
+            changed |= ui.checkbox(&mut rc.break_detect, "below").changed();
+            changed |= ui
+                .add(egui::DragValue::new(&mut rc.break_fraction).speed(0.01).range(0.05..=0.95).max_decimals(2))
+                .changed();
+            ui.label("× set current");
+        });
+        ui.end_row();
+    });
+    let machine = app.machine.clone();
+    let ctl = &mut app.control;
+    ui.horizontal(|ui| {
+        if ctl.riden.is_some() {
+            if ui
+                .add_enabled(!busy, egui::Button::new("Disconnect supply"))
+                .clicked()
+            {
+                ctl.disconnect_riden();
+            }
+        } else if ui.button("Connect supply").clicked() {
+            let ctx = ui.ctx().clone();
+            ctl.connect_riden(&ctx, &machine);
+        }
+        let col = if ctl.riden_msg.starts_with('⚠') {
+            Color32::from_rgb(220, 80, 60)
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        ui.label(RichText::new(&ctl.riden_msg).color(col));
+    });
+    if let Some(r) = ctl.reading {
+        ui.horizontal(|ui| {
+            ui.monospace(format!(
+                "{:5.2} V  {:5.3} A (set {:.3} A){}",
+                r.v_out,
+                r.i_out,
+                r.i_set,
+                r.resistance()
+                    .map(|o| format!("  {o:5.1} Ω"))
+                    .unwrap_or_default()
+            ));
+            if r.output {
+                ui.label(
+                    RichText::new(" output ON ")
+                        .strong()
+                        .color(Color32::WHITE)
+                        .background_color(Color32::from_rgb(200, 60, 30)),
+                );
+            } else {
+                ui.label(RichText::new("output off").weak());
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui
+                    .button("Apply current")
+                    .on_hover_text("Send the current and voltage limit to the supply now")
+                    .clicked()
+                    && let Some(h) = &ctl.riden
+                {
+                    h.send(RidenCommand::SetVoltage(machine.riden.max_voltage));
+                    h.send(RidenCommand::SetCurrent(machine.riden.current));
+                }
+                if ui.button("Output off").clicked() {
+                    ctl.riden_off();
+                }
+            });
+            if let Some(f) = &ctl.fake_riden {
+                let mut f = f.lock().expect("fake lock");
+                let broken = f.wire_ohms.is_none();
+                if ui
+                    .button(if broken {
+                        "Mend the wire"
+                    } else {
+                        "Break the wire"
+                    })
+                    .on_hover_text("Simulated supply only: test the broken-wire check")
+                    .clicked()
+                {
+                    f.wire_ohms = if broken { Some(15.0) } else { None };
+                }
+            }
+        });
+    }
     changed
 }
 
