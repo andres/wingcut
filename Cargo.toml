@@ -1,0 +1,15 @@
+[package]
+name = "wingcut"
+version = "0.1.0"
+edition = "2024"
+description = "Wing definition to synchronised 4-axis G93 G-code for a CNC hot-wire foam cutter"
+license = "MIT"
+repository = "https://github.com/andres/wingcut"
+keywords = ["cnc", "hotwire", "gcode", "airfoil", "foam"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.2.0"

@@ -2,4 +2,66 @@
 
 Open-source, Linux-first Rust tool that turns a wing definition (airfoils, chord, sweep, twist, dihedral, panels) into synchronised 4-axis G93 G-code for a DIY CNC hot-wire foam cutter running FluidNC.
 
-Status: planning. See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
+Status: **stages 1–2 done** (CLI core + multi-panel wings). The GUI (stage 3) and machine control (stage 4) are not started. See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
+
+> Not yet validated on a real machine or in devSim (SPEC §9). Check every file before cutting.
+
+## Build
+
+```bash
+cargo build --release        # binary: target/release/wingcut
+cargo test
+```
+
+Dependencies: `serde`, `toml`, `clap`, `anyhow`. Polyline offsetting is written in-house (`src/geom.rs`).
+
+## Use
+
+```bash
+# all panels of the 4 m example glider -> out/<panel>.gcode + out/<panel>.svg
+wingcut gen --machine examples/machine.toml --wing examples/wing.toml -o out/
+
+# one panel
+wingcut gen --machine examples/machine.toml --wing examples/wing.toml --panel tip-L
+
+# validate configs and axis limits, write nothing
+wingcut check --machine examples/machine.toml --wing examples/wing.toml
+
+# airfoil stats
+wingcut info examples/airfoils/naca2412.dat
+```
+
+`gen` prints a summary per panel: path length, min/max/average speed and kerf per face, estimated time, max tower speed, and warnings. Any projected point outside the axis limits is an error that names the tower, axis, value and point.
+
+The SVG preview shows, in machine coordinates: both face profiles (dashed = nominal, solid = with kerf and lead-in/out), both tower paths, the foam block, and the axis limits.
+
+## Config
+
+See the commented [examples/machine.toml](examples/machine.toml) and [examples/wing.toml](examples/wing.toml). Everything in `machine.toml` has a default matching SPEC §1.
+
+**Placement conventions** (worth reading once):
+
+- `s` runs from the root tower (0) to the tip tower (`tower_spacing`). `block.s_root` is the block face nearest the root tower. The block length must equal the panel span (`to - from`): the block faces are the cut faces.
+- The wire enters from the block front at `x0` (low x), at trailing-edge height. The profile's trailing edge sits `inset` (default 10 mm) behind the front, and the LE points towards +x. Park the wire in front of the block (x < `x0`) before you start: the program first moves Y/A to the entry height, then X/Z.
+- Vertically, each panel is centred in the block unless you set `block.chord_y` (height of the wing's y = 0 line above the block bottom).
+- `side = "left"` puts the wing root on the root-tower face. `side = "right"` mirrors the panel (wing root on the tip-tower face).
+- Twist is positive nose-up (washout negative), about `twist_pivot` × chord on the chord line. `le_offset` (sweep) is positive aft. `dihedral_offset` is positive up.
+- Axis letters are configurable (`axes = ["X","Y","U","V"]`). Both towers share one set of `limits`.
+
+## How it works
+
+Per panel (SPEC §4):
+
+1. **Parse** Selig or Lednicer `.dat`. A smooth parametric spline goes through the points. The LE is the point farthest from the TE midpoint. The section is normalised to chord 1 with the LE at (0,0); rotated, scaled, reversed and open-TE files all work.
+2. **Resample** both surfaces at the same x stations. The stations use LE-clustered cosine spacing, `x = 1 − cos(π/2 · i/(n−1))`. Index *i* is a sync point on every section of the wing. The point count is chosen so that no segment exceeds `max_segment` (0.2 mm) at the largest chord. Full cosine spacing would also cluster points at the TE, giving 10⁻⁴ mm segments that add noise and starve the G-code stream exactly where the wire must not stall.
+3. **Sections** come from the wing's span stations by linear interpolation: chord, offsets, twist and a point-by-point blend of the two airfoils. Then the TE is thickened to `te_min_thickness`, the section is twisted about the pivot, and sweep/dihedral are added. Equal span positions give bit-identical sections, so neighbouring panels match at their joint (tested).
+4. **Kerf**: each face is offset outward by kerf/2. The kerf comes from the `kerf` table at that face's *average* speed, so the slower face gets more. The offset keeps exactly one point per input point (miter joins with a limit; tight concave loops are collapsed, not removed), so the root/tip sync is never broken.
+5. **Cut path**: lead-in from in front of the block at the upper-TE height, then upper surface TE → LE → lower surface → TE, then lead-out at the lower-TE height. It is one connected line, so the top and bottom beds stay whole. There is an optional LE dwell.
+6. **Projection** to the towers along the wire line, then a limit check on every point.
+7. **G93 timing**: each segment's time is the longer of the two face segments divided by `feed_cut`, so the faster face cuts at exactly `feed_cut`. Wire-off moves are G94 at `feed_rapid`. The program ends with G94, `M5`, park, `M2`. Numbers have 3 decimals and no exponents.
+
+**Known limitations**: the wire cuts a ruled surface, so a station *inside* a panel is not reproduced (you get a warning; split the panel there). Kerf is per face, not per segment. There are no spar notches, sheeting offset or DXF import yet (stage 3).
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). The sample NACA airfoils come from the UIUC Airfoil Coordinates Database; see [examples/airfoils/SOURCES.md](examples/airfoils/SOURCES.md).

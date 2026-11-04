@@ -1,0 +1,61 @@
+# 4 m glider: 2 m half-span, cut as 4 panels (centre + tip, left + right).
+# Airfoil paths are relative to this file.
+name = "glider-4m"
+units = "mm"
+
+[[station]]
+span = 0                 # centreline
+chord = 260
+airfoil = "airfoils/naca2412.dat"
+le_offset = 0            # sweep: LE x offset, positive = aft
+dihedral_offset = 0      # y offset
+twist_deg = 0            # positive = nose up, washout negative
+twist_pivot = 0.25       # fraction of chord
+
+[[station]]
+span = 1000
+chord = 220
+airfoil = "airfoils/naca2412.dat"
+le_offset = 15
+twist_deg = -0.5
+
+[[station]]
+span = 2000
+chord = 140
+airfoil = "airfoils/naca2410.dat"
+le_offset = 45
+dihedral_offset = 35     # polyhedral on the tip panels (~2 deg)
+twist_deg = -2.0
+
+# Each panel is one foam block, centred between the towers (1600 - 1000) / 2 = 300.
+# block: s_root = face nearest the root tower, x0 = block front (wire enters here),
+# y0 = block bottom. side = "left": wing root on the root-tower side;
+# "right" mirrors it (wing root on the tip-tower side).
+
+[[panel]]
+name = "center-L"
+from = 0
+to = 1000
+block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 60, width = 300 }
+side = "left"
+
+[[panel]]
+name = "tip-L"
+from = 1000
+to = 2000
+block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 80, width = 300 }
+side = "left"
+
+[[panel]]
+name = "center-R"
+from = 0
+to = 1000
+block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 60, width = 300 }
+side = "right"
+
+[[panel]]
+name = "tip-R"
+from = 1000
+to = 2000
+block = { s_root = 300, length = 1000, x0 = 100, y0 = 20, height = 80, width = 300 }
+side = "right"

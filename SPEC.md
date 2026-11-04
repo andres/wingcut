@@ -132,7 +132,7 @@ wingcut info airfoils/ag35.dat   # parse + print stats
   - Limit violations are reported.
 - A sample `examples/` folder: two public-domain airfoil `.dat` files (e.g. from the UIUC database, noting the source), a `machine.toml`, and a 4-panel `wing.toml` for a 4 m glider.
 - `cargo fmt`, `cargo clippy -D warnings` and `cargo test` must pass before each push.
-- Licence: **TBD by the owner.** Suggested MIT OR Apache-2.0. Don't add a LICENSE file until it's decided.
+- Licence: **MIT** (decided by the owner, Nov 2026). See `LICENSE`.
 
 ## 9. Validation (after stage 2)
 
