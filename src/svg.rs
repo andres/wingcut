@@ -96,20 +96,13 @@ pub fn emit(plan: &CutPlan, m: &Machine, panel: &Panel) -> String {
 
     // Legend below the drawing (unflipped coordinates).
     let ly = vy + vh + fs * 1.3;
-    let role = |f: &crate::cut::Face| {
-        if f.is_wing_root {
-            "wing root"
-        } else {
-            "wing tip"
-        }
-    };
     let items = [
         (
             "#1f4fd1".to_string(),
             format!(
                 "face s={:.0} ({}), kerf {:.2} mm; dashed = nominal",
                 f0.s,
-                role(f0),
+                f0.role(),
                 f0.kerf
             ),
         ),
@@ -118,7 +111,7 @@ pub fn emit(plan: &CutPlan, m: &Machine, panel: &Panel) -> String {
             format!(
                 "face s={:.0} ({}), kerf {:.2} mm; dashed = nominal",
                 f1.s,
-                role(f1),
+                f1.role(),
                 f1.kerf
             ),
         ),

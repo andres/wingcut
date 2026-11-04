@@ -7,6 +7,9 @@ use crate::geom::{P2, offset_polyline, polyline_len, signed_area};
 use crate::wing::WingModel;
 use anyhow::{Result, bail};
 
+/// Tolerance (mm) on the axis limits, to absorb floating-point noise.
+const LIMIT_TOL: f64 = 1e-9;
+
 /// A machine move. `root`/`tip` are tower positions (x, y).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Move {
@@ -46,11 +49,25 @@ pub struct Face {
     pub kerfed: Vec<P2>,
     /// Full wire path on this face: entry, kerfed profile, exit.
     pub path: Vec<P2>,
+    /// Kerf used for this face (mm).
     pub kerf: f64,
+    /// Face speeds over the profile (mm/min); 0 if the profile is empty.
     pub speed_avg: f64,
     pub speed_min: f64,
     pub speed_max: f64,
+    /// Length of `path` (mm).
     pub path_len: f64,
+}
+
+impl Face {
+    /// `"wing root"` or `"wing tip"`.
+    pub fn role(&self) -> &'static str {
+        if self.is_wing_root {
+            "wing root"
+        } else {
+            "wing tip"
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +86,17 @@ pub struct CutPlan {
 }
 
 /// The wire line through two face points, evaluated at span position `s`.
+///
+/// With the block faces at `s_lo`/`s_hi`, the root tower is `s = 0` and the
+/// tip tower is `s = tower_spacing`:
+///
+/// ```
+/// use wingcut::{cut::project, geom::P2};
+/// let (root_face, tip_face) = (P2::new(100.0, 50.0), P2::new(110.0, 60.0));
+/// // Faces at 300 and 1300 on a 1600 mm machine: extrapolate 30 % each way.
+/// assert_eq!(project(root_face, 300.0, tip_face, 1300.0, 0.0), P2::new(97.0, 47.0));
+/// assert_eq!(project(root_face, 300.0, tip_face, 1300.0, 1600.0), P2::new(113.0, 63.0));
+/// ```
 pub fn project(p_lo: P2, s_lo: f64, p_hi: P2, s_hi: f64, s: f64) -> P2 {
     p_lo + (p_hi - p_lo) * ((s - s_lo) / (s_hi - s_lo))
 }
@@ -237,8 +265,8 @@ pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPl
         s,
         is_wing_root,
         speed_avg: polyline_len(&nominal) / t_total,
-        speed_min: sp.iter().copied().fold(f64::MAX, f64::min),
-        speed_max: sp.iter().copied().fold(0.0, f64::max),
+        speed_min: sp.iter().copied().reduce(f64::min).unwrap_or(0.0),
+        speed_max: sp.iter().copied().reduce(f64::max).unwrap_or(0.0),
         path_len: polyline_len(&path),
         nominal,
         kerfed,
@@ -261,57 +289,111 @@ pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPl
     })
 }
 
-fn check_limits(m: &Machine, panel: &str, root: &[P2], tip: &[P2], n_profile: usize) -> Result<()> {
-    let ax = &m.axes;
-    let mut errs = Vec::new();
-    let what = |i: usize| -> String {
+/// One projected point outside the machine's travel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Violation {
+    /// `"root"` or `"tip"` tower, or `"park"`.
+    pub tower: &'static str,
+    /// Configured axis letter.
+    pub axis: String,
+    pub value: f64,
+    pub limits: [f64; 2],
+    /// Index in the tower path (lead-in start = 0); `None` for the park move.
+    pub index: Option<usize>,
+    /// Human-readable location, e.g. "upper surface point 12".
+    pub location: String,
+}
+
+/// Every axis-limit violation of a panel. Returned (inside `anyhow::Error`)
+/// by [`plan_panel`]; callers such as a GUI can `downcast_ref` it to show
+/// the offending points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LimitError {
+    pub panel: String,
+    pub violations: Vec<Violation>,
+}
+
+impl std::fmt::Display for LimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const SHOWN: usize = 8;
+        let n = self.violations.len();
+        write!(f, "panel {:?}: {n} axis limit violation(s):", self.panel)?;
+        for v in self.violations.iter().take(SHOWN) {
+            let at = v
+                .index
+                .map(|i| format!(" (path index {i})"))
+                .unwrap_or_default();
+            write!(
+                f,
+                "\n  {} tower {} = {:.3} outside [{}, {}] at {}{at}",
+                v.tower, v.axis, v.value, v.limits[0], v.limits[1], v.location
+            )?;
+        }
+        if n > SHOWN {
+            write!(f, "\n  ... and {} more", n - SHOWN)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LimitError {}
+
+fn check_limits(
+    m: &Machine,
+    panel: &str,
+    root: &[P2],
+    tip: &[P2],
+    n_profile: usize,
+) -> Result<(), LimitError> {
+    // `contains` is false for NaN, so non-finite values are violations too.
+    let inside = |v: f64, lim: [f64; 2]| (lim[0] - LIMIT_TOL..=lim[1] + LIMIT_TOL).contains(&v);
+    let location = |i: usize| -> String {
         if i == 0 {
             "lead-in start".into()
         } else if i == n_profile + 1 {
             "lead-out end".into()
+        } else if i - 1 < n_profile.div_ceil(2) {
+            format!("upper surface point {}", i - 1)
         } else {
-            let k = i - 1;
-            let half = n_profile.div_ceil(2);
-            if k < half {
-                format!("upper surface point {k}")
-            } else {
-                format!("lower surface point {k}")
-            }
+            format!("lower surface point {}", i - 1)
         }
     };
-    for (tower, pts, (xa, ya)) in [
-        ("root", root, (&ax[0], &ax[1])),
-        ("tip", tip, (&ax[2], &ax[3])),
-    ] {
+    let ax = &m.axes;
+    let mut violations = Vec::new();
+    for (tower, pts, xa, ya) in [("root", root, &ax[0], &ax[1]), ("tip", tip, &ax[2], &ax[3])] {
         for (i, p) in pts.iter().enumerate() {
-            for (axis, v, lim) in [(xa, p.x, m.limits.x), (ya, p.y, m.limits.y)] {
-                if v < lim[0] - 1e-9 || v > lim[1] + 1e-9 {
-                    errs.push(format!(
-                        "{tower} tower {axis} = {v:.3} outside [{}, {}] at {} (path index {i})",
-                        lim[0],
-                        lim[1],
-                        what(i)
-                    ));
+            for (axis, value, limits) in [(xa, p.x, m.limits.x), (ya, p.y, m.limits.y)] {
+                if !inside(value, limits) {
+                    violations.push(Violation {
+                        tower,
+                        axis: axis.clone(),
+                        value,
+                        limits,
+                        index: Some(i),
+                        location: location(i),
+                    });
                 }
             }
         }
     }
-    if !(m.limits.x[0]..=m.limits.x[1]).contains(&m.park_x) {
-        errs.push(format!(
-            "park_x = {} outside the x limits [{}, {}]",
-            m.park_x, m.limits.x[0], m.limits.x[1]
-        ));
+    if !inside(m.park_x, m.limits.x) {
+        violations.push(Violation {
+            tower: "park",
+            axis: format!("{}/{}", ax[0], ax[2]),
+            value: m.park_x,
+            limits: m.limits.x,
+            index: None,
+            location: "park_x".into(),
+        });
     }
-    if errs.is_empty() {
-        return Ok(());
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(LimitError {
+            panel: panel.to_string(),
+            violations,
+        })
     }
-    let n = errs.len();
-    errs.truncate(8);
-    bail!(
-        "panel {panel:?}: {n} axis limit violation(s):\n  {}{}",
-        errs.join("\n  "),
-        if n > 8 { "\n  ..." } else { "" }
-    )
 }
 
 #[cfg(test)]

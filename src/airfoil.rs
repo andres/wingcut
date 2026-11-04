@@ -83,6 +83,12 @@ impl Profile {
 /// segments; at the nearly straight TE it gives the coarsest spacing. A full
 /// cosine distribution would also cluster at the TE, producing ~1e-4 mm
 /// segments that only add noise and starve the G-code stream there.
+///
+/// ```
+/// let x = wingcut::airfoil::cosine_stations(5);
+/// assert_eq!((x[0], x[4]), (0.0, 1.0));
+/// assert!(x[1] - x[0] < x[4] - x[3]); // densest at the leading edge
+/// ```
 pub fn cosine_stations(n: usize) -> Vec<f64> {
     (0..n)
         .map(|i| {
@@ -116,6 +122,19 @@ impl Airfoil {
         Airfoil::parse(&text).with_context(|| format!("parsing airfoil {}", path.display()))
     }
 
+    /// Parse Selig (TE → upper → LE → lower → TE) or Lednicer (counts,
+    /// then upper and lower LE → TE) text. An optional first line is the name.
+    ///
+    /// ```
+    /// use wingcut::airfoil::{Airfoil, DatFormat};
+    /// let dat = "DIAMOND\n1 0\n0.5 0.05\n0 0\n0.5 -0.05\n1 0\n";
+    /// let af = Airfoil::parse(dat)?;
+    /// assert_eq!((af.name.as_str(), af.format), ("DIAMOND", DatFormat::Selig));
+    /// assert!(!af.is_open_te());
+    /// let p = af.resample(21);
+    /// assert!(p.upper[10].y > 0.0 && p.lower[10].y < 0.0);
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
     pub fn parse(text: &str) -> Result<Airfoil> {
         let mut name = String::new();
         let mut rows: Vec<(f64, f64)> = Vec::new();
@@ -519,6 +538,12 @@ pub(crate) mod tests {
         let af = Airfoil::parse(&selig_text(&up2, &lo2)).unwrap();
         assert!(af.is_open_te());
         assert!((af.te_gap - 0.0026).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rejects_lednicer_header_that_does_not_match() {
+        let e = Airfoil::parse("L\n5. 5.\n0 0\n0.5 0.1\n1 0\n0 0\n0.5 -0.1\n1 0\n").unwrap_err();
+        assert!(e.to_string().contains("Lednicer header says 5+5"), "{e}");
     }
 
     #[test]

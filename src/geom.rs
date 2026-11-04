@@ -90,6 +90,14 @@ pub fn seg_intersect(a0: P2, a1: P2, b0: P2, b1: P2) -> Option<P2> {
 /// * End points move along their single segment's normal.
 /// * Local self-intersections (concave curvature tighter than `|d|`) are
 ///   collapsed onto the intersection point instead of being removed.
+///
+/// ```
+/// use wingcut::geom::{P2, offset_polyline};
+/// let line = [P2::new(0.0, 0.0), P2::new(10.0, 0.0), P2::new(10.0, 10.0)];
+/// let out = offset_polyline(&line, -0.5, 4.0); // to the right
+/// assert_eq!(out.len(), line.len());
+/// assert!((out[1].x - 10.5).abs() < 1e-12 && (out[1].y + 0.5).abs() < 1e-12); // miter
+/// ```
 pub fn offset_polyline(pts: &[P2], d: f64, miter_limit: f64) -> Vec<P2> {
     let n = pts.len();
     if n < 2 || d == 0.0 {

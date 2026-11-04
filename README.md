@@ -31,7 +31,7 @@ wingcut check --machine examples/machine.toml --wing examples/wing.toml
 wingcut info examples/airfoils/naca2412.dat
 ```
 
-`gen` prints a summary per panel: path length, min/max/average speed and kerf per face, estimated time, max tower speed, and warnings. Any projected point outside the axis limits is an error that names the tower, axis, value and point.
+`gen` prints a summary per panel on stdout: path length, min/max/average speed and kerf per face, estimated time and max tower speed. Warnings go to stderr. Every panel is planned before anything is written, so a projected point outside the axis limits (an error naming the tower, axis, value and point) means no files are written at all. Files are written via a temporary file and a rename, so an interrupted run never leaves a truncated G-code file behind. Exit codes: 0 ok, 1 error, 2 usage.
 
 The SVG preview shows, in machine coordinates: both face profiles (dashed = nominal, solid = with kerf and lead-in/out), both tower paths, the foam block, and the axis limits.
 
@@ -61,6 +61,14 @@ Per panel (SPEC §4):
 7. **G93 timing**: each segment's time is the longer of the two face segments divided by `feed_cut`, so the faster face cuts at exactly `feed_cut`. Wire-off moves are G94 at `feed_rapid`. The program ends with G94, `M5`, park, `M2`. Numbers have 3 decimals and no exponents.
 
 **Known limitations**: the wire cuts a ruled surface, so a station *inside* a panel is not reproduced (you get a warning; split the panel there). Kerf is per face, not per segment. There are no spar notches, sheeting offset or DXF import yet (stage 3).
+
+## Development
+
+```bash
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+```
+
+The tests cover every SPEC §8 requirement, config validation (including `nan`/`inf`, which TOML accepts), CLI behaviour, and a randomised sweep of 40 wing shapes. The sweep checks the invariants: sync kept, the faster face at `feed_cut`, kerf on the outside, and no self-intersections. For library use, see the example in `src/lib.rs`. Limit failures carry a typed `cut::LimitError` with every offending point.
 
 ## Licence
 
