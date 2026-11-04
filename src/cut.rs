@@ -62,12 +62,13 @@ pub struct Face {
 }
 
 impl Face {
-    /// `"wing root"` or `"wing tip"`.
+    /// `"inner end"` (the panel's end towards the fuselage) or `"outer end"`
+    /// (towards the wing tip).
     pub fn role(&self) -> &'static str {
         if self.is_wing_root {
-            "wing root"
+            "inner end"
         } else {
-            "wing tip"
+            "outer end"
         }
     }
 }

@@ -23,9 +23,14 @@ fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> PlotPoints<'static> {
 }
 
 pub fn show(ui: &mut Ui, app: &mut App) {
-    ui.horizontal(|ui| {
+    // Wraps on narrow windows instead of widening the panel.
+    ui.horizontal_wrapped(|ui| {
         ui.selectable_value(&mut app.view_tab, ViewTab::Cut, "Cut preview");
-        ui.selectable_value(&mut app.view_tab, ViewTab::Planform, "Planform");
+        ui.selectable_value(&mut app.view_tab, ViewTab::Planform, "Planform")
+            .on_hover_text("The whole wing from above");
+        ui.selectable_value(&mut app.view_tab, ViewTab::Front, "Front view")
+            .on_hover_text("The whole wing from the front: dihedral");
+        crate::help::button(ui, "views");
         ui.separator();
         if app.view_tab == ViewTab::Cut {
             let l = &mut app.layers;
@@ -34,11 +39,8 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             ui.checkbox(&mut l.towers, "tower paths");
             ui.checkbox(&mut l.block, "block");
             ui.checkbox(&mut l.limits, "axis limits");
-            ui.label(
-                RichText::new("drag to pan, scroll to zoom, double-click to fit")
-                    .weak()
-                    .small(),
-            );
+            ui.label(RichText::new("tips").small().weak())
+                .on_hover_text("Drag to pan, scroll to zoom, double-click to fit. Click a legend entry to hide it.");
         }
     });
     match app.view_tab {
@@ -51,6 +53,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             }
         },
         ViewTab::Planform => planform(ui, app),
+        ViewTab::Front => front(ui, app),
     }
 }
 
@@ -172,22 +175,45 @@ fn cut(ui: &mut Ui, app: &App, p: &PreviewData) {
         });
 }
 
-fn planform(ui: &mut Ui, app: &App) {
-    // Top view of the whole wing: left panels at negative span, right panels
-    // at positive span, chord downwards (LE on top).
+/// Which panel (if any) covers span position `x` (left wing negative).
+fn panel_at(app: &App, x: f64) -> Option<usize> {
+    app.wing.panels.iter().position(|p| {
+        let k = if p.side == Side::Left { -1.0 } else { 1.0 };
+        let (a, b) = (k * p.from, k * p.to);
+        x >= a.min(b) && x <= a.max(b)
+    })
+}
+
+fn sorted_stations(app: &App) -> Vec<wingcut::config::Station> {
     let mut st = app.wing.stations.clone();
     st.sort_by(|a, b| a.span.total_cmp(&b.span));
+    st
+}
+
+/// Span positions of all stations on both halves, left (negative) first.
+fn both_halves(st: &[wingcut::config::Station]) -> Vec<f64> {
+    st.iter()
+        .rev()
+        .map(|s| -s.span)
+        .chain(st.iter().map(|s| s.span))
+        .collect()
+}
+
+fn planform(ui: &mut Ui, app: &mut App) {
+    // Top view of the whole wing: left panels at negative span, right panels
+    // at positive span, chord downwards (LE on top).
+    let st = sorted_stations(app);
     if st.len() < 2 {
         ui.label("Add at least two stations.");
         return;
     }
     let le = |s: f64| interp(&st, s.abs(), |x| -x.le_offset);
     let te = |s: f64| interp(&st, s.abs(), |x| -(x.le_offset + x.chord));
-    Plot::new("planform")
+    let pr = Plot::new("planform")
         .data_aspect(1.0)
         .legend(Legend::default())
-        .x_axis_label("span (mm), left wing negative")
-        .y_axis_label("chord (mm)")
+        .x_axis_label("span (mm): left wing ◀ 0 ▶ right wing · click a panel to select it")
+        .y_axis_label("chord (mm), leading edge on top")
         .show(ui, |pu| {
             for (i, p) in app.wing.panels.iter().enumerate() {
                 let sel = i == app.selected;
@@ -210,12 +236,7 @@ fn planform(ui: &mut Ui, app: &App) {
                     RichText::new(&p.name).strong(),
                 ));
             }
-            let span: Vec<f64> = st
-                .iter()
-                .rev()
-                .map(|s| -s.span)
-                .chain(st.iter().map(|s| s.span))
-                .collect();
+            let span = both_halves(&st);
             pu.line(
                 Line::new(
                     "leading edge",
@@ -238,8 +259,85 @@ fn planform(ui: &mut Ui, app: &App) {
                         .color(LIMITS)
                         .style(LineStyle::dashed_dense()),
                 );
+                pu.text(Text::new(
+                    "station positions",
+                    [s, le(s) + 25.0].into(),
+                    RichText::new(format!("{:.0}", s.abs())).small(),
+                ));
             }
         });
+    if pr.response.clicked()
+        && let Some(pos) = pr.response.interact_pointer_pos()
+        && let Some(i) = panel_at(app, pr.transform.value_from_position(pos).x)
+        && i != app.selected
+    {
+        app.selected = i;
+        app.dirty = true;
+    }
+}
+
+fn front(ui: &mut Ui, app: &mut App) {
+    // Front view: dihedral offset along the span, both halves.
+    let st = sorted_stations(app);
+    if st.len() < 2 {
+        ui.label("Add at least two stations.");
+        return;
+    }
+    let up = |s: f64| interp(&st, s.abs(), |x| x.dihedral_offset);
+    let pr = Plot::new("front")
+        .legend(Legend::default())
+        .x_axis_label("span (mm): left wing ◀ 0 ▶ right wing · click a panel to select it")
+        .y_axis_label("dihedral offset (mm), vertical scale exaggerated")
+        .show(ui, |pu| {
+            let span = both_halves(&st);
+            pu.line(
+                Line::new(
+                    "wing (reference line)",
+                    span.iter().map(|&s| [s, up(s)]).collect::<PlotPoints>(),
+                )
+                .color(Color32::GRAY)
+                .width(1.5),
+            );
+            for (i, p) in app.wing.panels.iter().enumerate() {
+                let sel = i == app.selected;
+                let k = if p.side == Side::Left { -1.0 } else { 1.0 };
+                let (a, b) = (k * p.from, k * p.to);
+                pu.line(
+                    Line::new(
+                        if sel { "selected panel" } else { "panels" },
+                        vec![[a, up(a)], [b, up(b)]],
+                    )
+                    .color(if sel {
+                        ROOT_FACE
+                    } else {
+                        Color32::from_rgba_unmultiplied(31, 79, 209, 90)
+                    })
+                    .width(if sel { 6.0 } else { 3.0 }),
+                );
+                let mid = (a + b) / 2.0;
+                pu.text(Text::new(
+                    "panel names",
+                    [mid, up(mid)].into(),
+                    RichText::new(&p.name).strong(),
+                ));
+            }
+            pu.points(
+                Points::new(
+                    "stations",
+                    span.iter().map(|&s| [s, up(s)]).collect::<PlotPoints>(),
+                )
+                .radius(3.0)
+                .color(LIMITS),
+            );
+        });
+    if pr.response.clicked()
+        && let Some(pos) = pr.response.interact_pointer_pos()
+        && let Some(i) = panel_at(app, pr.transform.value_from_position(pos).x)
+        && i != app.selected
+    {
+        app.selected = i;
+        app.dirty = true;
+    }
 }
 
 /// Linear interpolation of a station value along the span.

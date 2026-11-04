@@ -12,7 +12,7 @@ Needs: a C linker (`build-essential` on Debian/Ubuntu) and a normal desktop (X11
 
 ## What to check in the GUI
 
-1. **Preview**: `center-L` shows two faces (blue = wing root, red = wing tip) with spar slots, green/orange tower paths, and the yellow block.
+1. **Preview**: `center-L` shows two faces (blue = the panel's inner end, red = its outer end) with spar slots, green/orange tower paths, and the yellow block.
 2. **Live edit**: drag the root chord (Stations, first row) and watch the preview follow. The title gets a `*`.
 3. **Panels**: click `tip-L` to see the hinge cut. Open the **Planform** tab to see the whole wing.
 4. **Limits**: set *Block bottom y0* to `-15`. Red points appear, the bottom bar explains the problem, and **Generate all** refuses to write.

@@ -7,6 +7,7 @@
 mod app;
 mod control;
 mod editors;
+mod help;
 mod preview;
 
 use std::path::PathBuf;

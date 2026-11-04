@@ -28,6 +28,7 @@ pub enum Pending {
 pub enum ViewTab {
     Cut,
     Planform,
+    Front,
 }
 
 /// What the cut preview shows.
@@ -69,6 +70,8 @@ pub struct App {
     pub control: crate::control::Control,
     /// Asking whether to stop a running cut before quitting.
     confirm_stop_quit: bool,
+    /// "Split into panels" dialog, when open.
+    pub split: Option<crate::editors::SplitDialog>,
     allow_close: bool,
     title: String,
 }
@@ -99,19 +102,16 @@ impl App {
             pending: None,
             control: Default::default(),
             confirm_stop_quit: false,
+            split: None,
             allow_close: false,
             title: String::new(),
         };
-        if let Some(w) = wing {
-            app.open_wing(&w);
-            // A machine.toml next to the wing is the natural default.
-            let sibling = w.parent().map(|d| d.join("machine.toml"));
-            if machine.is_none() && sibling.as_ref().is_some_and(|p| p.exists()) {
-                app.open_machine(&sibling.expect("checked"));
-            }
-        }
+        // An explicit machine first, so the wing doesn't load its sibling.
         if let Some(m) = machine {
             app.open_machine(&m);
+        }
+        if let Some(w) = wing {
+            app.open_wing(&w);
         }
         app
     }
@@ -128,6 +128,14 @@ impl App {
                 self.dirty = true;
                 self.out_dir = None;
                 self.status = format!("Opened {}", path.display());
+                // Pick up the machine.toml next to the wing, unless a
+                // machine file is already open.
+                let sibling = path.parent().map(|d| d.join("machine.toml"));
+                if self.machine_path.is_none()
+                    && let Some(m) = sibling.filter(|p| p.exists())
+                {
+                    self.open_machine(&m);
+                }
             }
             Err(e) => self.status = format!("⚠ {e:#}"),
         }
@@ -478,6 +486,7 @@ impl App {
                     ui.close();
                 }
             });
+            crate::help::menu(ui);
             ui.separator();
             if ui
                 .button("⚙ Generate panel")
@@ -493,7 +502,9 @@ impl App {
             {
                 self.generate(false);
             }
-            ui.label(RichText::new(format!("→ {}", self.output_dir().display())).weak());
+            let out = format!("→ {}", self.output_dir().display());
+            ui.add(egui::Label::new(RichText::new(&out).weak()).truncate())
+                .on_hover_text(format!("Generate writes the G-code and SVG files to {out}"));
             if ui
                 .small_button("change…")
                 .on_hover_text("Choose the output folder")
@@ -510,7 +521,9 @@ impl App {
             } else {
                 ui.visuals().weak_text_color()
             };
-            ui.label(RichText::new(&self.status).color(color));
+            // Truncated so a long message never widens the window.
+            ui.add(egui::Label::new(RichText::new(&self.status).color(color)).truncate())
+                .on_hover_text(&self.status);
         });
     }
 
@@ -634,6 +647,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| preview::show(ui, self));
         self.unsaved_dialog(&ctx);
         crate::control::preflight_dialog(&ctx, &mut self.control);
+        crate::editors::split_dialog(&ctx, self);
         self.stop_quit_dialog(&ctx);
         self.update_title(&ctx);
     }
