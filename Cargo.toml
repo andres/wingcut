@@ -8,6 +8,9 @@ repository = "https://github.com/andres/wingcut"
 keywords = ["cnc", "hotwire", "gcode", "airfoil", "foam"]
 categories = ["command-line-utilities"]
 
+[workspace]
+members = ["gui"]
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }

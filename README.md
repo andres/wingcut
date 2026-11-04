@@ -2,7 +2,7 @@
 
 Open-source, Linux-first Rust tool that turns a wing definition (airfoils, chord, sweep, twist, dihedral, panels) into synchronised 4-axis G93 G-code for a DIY CNC hot-wire foam cutter running FluidNC.
 
-Status: **stages 1–2 done** (CLI core + multi-panel wings). The GUI (stage 3) and machine control (stage 4) are not started. See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
+Status: **stages 1–3 done**: CLI core, multi-panel wings, and a desktop GUI with spar notches, hinge cuts and DXF import. Stage 4 (machine control) is not started. See [SPEC.md](SPEC.md) for the build brief and [docs/hardware-plan.md](docs/hardware-plan.md) for the machine.
 
 > Not yet validated on a real machine or in devSim (SPEC §9). Check every file before cutting.
 
@@ -13,7 +13,7 @@ cargo build --release        # binary: target/release/wingcut
 cargo test
 ```
 
-Dependencies: `serde`, `toml`, `clap`, `clap_complete` (shell completions, approved by the owner), `anyhow`. Polyline offsetting is written in-house (`src/geom.rs`).
+Dependencies: `serde`, `toml`, `clap`, `clap_complete` (shell completions), `anyhow`. The GUI crate (`gui/`) adds `eframe`, `egui_plot` and `rfd`. All were approved by the owner. Polyline offsetting is written in-house (`src/geom.rs`).
 
 ## Use
 
@@ -38,6 +38,21 @@ wingcut completions bash > ~/.local/share/bash-completion/completions/wingcut
 
 The SVG preview shows, in machine coordinates: both face profiles (dashed = nominal, solid = with kerf and lead-in/out), both tower paths, the foam block, and the axis limits.
 
+## GUI
+
+```bash
+cargo run --release -p wingcut-gui -- examples/wing.toml   # opens examples/machine.toml next to it
+```
+
+![wingcut GUI: wing and panel editor on the left, live cut preview of both faces and tower paths on the right](docs/img/gui.png)
+
+- **Left:** forms for the wing (stations, panels, block placement, cutouts) and the machine (travel, feeds, heat, kerf table). Hover a label for help. `…` next to an airfoil picks a `.dat` or `.dxf` file.
+- **Centre:** a live preview that re-plans on every edit. It shows both faces (dashed = nominal, solid = with kerf and leads), both tower paths, the block and the axis limits, and turns points outside the limits red. The Planform tab shows the whole half-wing with its panels.
+- **Bottom:** the per-face summary, warnings and errors.
+- **Top:** File menu (open/save wing and machine, Ctrl+S), and **Generate panel / Generate all**, which write the same G-code and SVG as the CLI. Generate refuses to write anything if a panel breaks the limits.
+
+The GUI edits the same TOML files the CLI reads, so you can switch between them freely. On Linux, file dialogs use the desktop portal (`xdg-desktop-portal`); every path can also be typed in directly. Rendering uses wgpu (Vulkan, Metal or DX12) and falls back to plain OpenGL on machines without those, such as old PCs and VMs.
+
 ## Config
 
 See the commented [examples/machine.toml](examples/machine.toml) and [examples/wing.toml](examples/wing.toml). Everything in `machine.toml` has a default matching SPEC §1.
@@ -50,6 +65,8 @@ See the commented [examples/machine.toml](examples/machine.toml) and [examples/w
 - `side = "left"` puts the wing root on the root-tower face. `side = "right"` mirrors the panel (wing root on the tip-tower face).
 - Twist is positive nose-up (washout negative), about `twist_pivot` × chord on the chord line. `le_offset` (sweep) is positive aft. `dihedral_offset` is positive up.
 - Axis letters are configurable (`axes = ["X","Y","U","V"]`). Both towers share one set of `limits`.
+- `[[panel.cutout]]` cuts a slot with walls perpendicular to the chord at chord fraction `x`. It is the same fraction on both faces, while `width` and `depth` are in mm, so a constant-section spar fits the whole panel. Use `depth` for a spar notch, or `leave` (material kept at the opposite surface) for a hinge cut. Slot corners are sync points, and kerf is compensated, so the slot in the foam comes out at the nominal size.
+- An airfoil can be a `.dat` (Selig or Lednicer) or a `.dxf` (a polyline or line outline; arcs and spline control points are not supported).
 
 ## How it works
 
@@ -63,12 +80,12 @@ Per panel (SPEC §4):
 6. **Projection** to the towers along the wire line, then a limit check on every point.
 7. **G93 timing**: each segment's time is the longer of the two face segments divided by `feed_cut`, so the faster face cuts at exactly `feed_cut`. Wire-off moves are G94 at `feed_rapid`. The program ends with G94, `M5`, park, `M2`. Numbers have 3 decimals and no exponents.
 
-**Known limitations**: the wire cuts a ruled surface, so a station *inside* a panel is not reproduced (you get a warning; split the panel there). Kerf is per face, not per segment. There are no spar notches, sheeting offset or DXF import yet (stage 3).
+**Known limitations**: the wire cuts a ruled surface, so a station *inside* a panel is not reproduced (you get a warning; split the panel there). Kerf is per face, not per segment. There is no sheeting offset, and hinge cuts are straight slots, not V-bevels.
 
 ## Development
 
 ```bash
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
 CI runs the same checks on Linux, macOS and Windows. The tests cover every SPEC §8 requirement, config validation (including `nan`/`inf`, which TOML accepts), CLI behaviour, and a randomised sweep of 40 wing shapes. The sweep checks the invariants: sync kept, the faster face at `feed_cut`, kerf on the outside, and no self-intersections. For library use, see the example in `src/lib.rs`. Limit failures carry a typed `cut::LimitError` with every offending point.

@@ -121,6 +121,13 @@ impl Machine {
         Machine::parse(&text).with_context(|| format!("machine config {}", path.display()))
     }
 
+    /// Read without validating (an editor can open a broken file to fix it).
+    pub fn read(path: &Path) -> Result<Machine> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading machine config {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("machine config {}", path.display()))
+    }
+
     pub fn parse(text: &str) -> Result<Machine> {
         toml::from_str::<Machine>(text)?.normalized()
     }
@@ -354,6 +361,16 @@ impl Wing {
             .with_context(|| format!("reading wing config {}", path.display()))?;
         let base = path.parent().unwrap_or(Path::new("."));
         Wing::parse(&text, base).with_context(|| format!("wing config {}", path.display()))
+    }
+
+    /// Read without validating (an editor can open a broken file to fix it).
+    pub fn read(path: &Path) -> Result<Wing> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading wing config {}", path.display()))?;
+        let mut w: Wing =
+            toml::from_str(&text).with_context(|| format!("wing config {}", path.display()))?;
+        w.base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        Ok(w)
     }
 
     /// Parse a wing; airfoil paths are resolved relative to `base_dir`.

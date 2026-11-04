@@ -113,7 +113,23 @@ fn segment_times(a: &[P2], b: &[P2], feed: f64) -> Vec<(f64, f64, f64)> {
         .collect()
 }
 
+/// Plan a panel's cut. Fails with a [`LimitError`] if any projected point
+/// is outside the axis limits.
 pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPlan> {
+    let (plan, limits) = plan_panel_unchecked(model, m, panel)?;
+    match limits {
+        Some(e) => Err(e.into()),
+        None => Ok(plan),
+    }
+}
+
+/// Like [`plan_panel`], but returns the plan even when it violates the axis
+/// limits, together with the violations (for previews that show them).
+pub fn plan_panel_unchecked(
+    model: &WingModel,
+    m: &Machine,
+    panel: &Panel,
+) -> Result<(CutPlan, Option<LimitError>)> {
     let b = &panel.block;
     let span = panel.to - panel.from;
     let (s_lo, s_hi) = (b.s_root, b.s_root + span);
@@ -215,7 +231,7 @@ pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPl
     };
     let root_tower = proj(0.0);
     let tip_tower = proj(m.tower_spacing);
-    check_limits(m, &panel.name, &root_tower, &tip_tower, line.le_index)?;
+    let limits = check_limits(m, &panel.name, &root_tower, &tip_tower, line.le_index).err();
 
     // Moves.
     let le_idx = line.le_index + 1; // the path has the lead-in point first
@@ -289,7 +305,7 @@ pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPl
         path,
         kerf,
     };
-    Ok(CutPlan {
+    let plan = CutPlan {
         panel: panel.name.clone(),
         faces: [
             face(s_lo, lo_is_root, n_lo, kf_lo, p_lo, k_lo, &speeds[0]),
@@ -302,7 +318,8 @@ pub fn plan_panel(model: &WingModel, m: &Machine, panel: &Panel) -> Result<CutPl
         total_minutes,
         max_tower_speed,
         warnings,
-    })
+    };
+    Ok((plan, limits))
 }
 
 /// One projected point outside the machine's travel.
