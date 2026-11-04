@@ -123,7 +123,7 @@ wingcut info airfoils/ag35.dat   # parse + print stats
 ## 8. Engineering rules
 
 - Rust stable, Cargo workspace or a single crate (keep it simple). Linux is the primary target; don't break macOS or Windows needlessly.
-- Few dependencies. Reasonable picks: `serde` + `toml`, `clap`, `anyhow`/`thiserror`. Also approved: `clap_complete` (shell completions). For polygon offsetting, pick one well-maintained crate, or write a small, well-tested offset. Justify any other dependency in the PR or commit message.
+- Few dependencies. Reasonable picks: `serde` + `toml`, `clap`, `anyhow`/`thiserror`. Also approved: `clap_complete` (shell completions); for the GUI crate: `eframe`, `egui_plot`, `rfd`. For polygon offsetting, pick one well-maintained crate, or write a small, well-tested offset. Justify any other dependency in the PR or commit message.
 - Unit tests for every geometric step. Required tests:
   - Projection with block faces at the towers is the identity.
   - A rectangular untapered panel gives identical root and tip tower paths.

@@ -1,0 +1,18 @@
+[package]
+name = "wingcut-gui"
+version = "0.1.0"
+edition = "2024"
+description = "Desktop editor and live preview for wingcut"
+license = "MIT"
+repository = "https://github.com/andres/wingcut"
+
+[[bin]]
+name = "wingcut-gui"
+path = "src/main.rs"
+
+[dependencies]
+wingcut = { path = ".." }
+anyhow = "1.0.104"
+eframe = { version = "0.37.0", features = ["glow"] }
+egui_plot = "0.38.0"
+rfd = "0.17.2"
