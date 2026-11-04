@@ -1,0 +1,23 @@
+# Machine config for the two-tower cutter in docs/hardware-plan.md.
+tower_spacing = 1600              # mm, wire contact to wire contact
+axes = ["X", "Y", "Z", "A"]       # root-x, root-y, tip-x, tip-y (e.g. ["X","Y","U","V"])
+limits = { x = [0, 1000], y = [0, 300] }   # same travel on both towers
+
+feed_cut = 180                    # mm/min at the faster block face
+feed_rapid = 800                  # mm/min, wire off
+heat_on = "M3 S1000"
+heat_off = "M5"
+preheat_s = 2.0                   # dwell after wire on
+le_dwell_s = 0.0                  # optional dwell at the leading edge
+
+# Kerf (mm) vs face speed (mm/min), from your own test cuts. Interpolated, clamped at the ends.
+kerf = [
+  { feed = 120, kerf = 1.1 },
+  { feed = 180, kerf = 0.8 },
+  { feed = 240, kerf = 0.6 },
+]
+
+te_min_thickness = 0.8            # mm, so the TE doesn't burn away
+max_segment = 0.2                 # mm, max profile segment at the largest chord
+lead_clearance = 5.0              # mm in front of the block where the wire starts/ends
+park_x = 0.0                      # tower x to return to after the cut
