@@ -675,6 +675,7 @@ pub fn new_panel(name: &str, from: f64, to: f64) -> Panel {
             inset: 10.0,
             chord_y: None,
         },
+        wire_current: None,
         sheeting: Default::default(),
         cutouts: Vec::new(),
     }
@@ -850,6 +851,83 @@ mod tests {
             "{}",
             app.control.message
         );
+    }
+
+    #[test]
+    fn riden_sets_the_current_and_a_broken_wire_pauses_the_cut() {
+        use crate::control::{Check, selected_job};
+        use wingcut::config::LinkKind;
+        let ctx = egui::Context::default();
+        let mut app = example();
+        app.machine.connection.kind = LinkKind::Simulator;
+        app.machine.connection.sim_speed = 20.0;
+        app.machine.riden.enabled = true;
+        app.machine.riden.simulated = true;
+        app.machine.riden.current = 1.9;
+        app.wing.panels[0].wire_current = Some(2.1);
+        let m = app.machine.clone();
+        // The Riden must be connected, or the cut is blocked.
+        app.control.connect(&m);
+        pump(&mut app, &ctx, 5.0, |a| a.control.connected());
+        app.control.home();
+        pump(&mut app, &ctx, 5.0, |a| a.control.homed);
+        pump(&mut app, &ctx, 5.0, |a| {
+            a.control
+                .status
+                .as_ref()
+                .is_some_and(|s| s.state == wingcut_machine::grbl::State::Idle)
+        });
+        app.control.prepare(&m, selected_job(&app));
+        assert!(
+            app.control
+                .preflight
+                .as_ref()
+                .unwrap()
+                .checks
+                .iter()
+                .any(|(c, t)| *c == Check::Block && t.contains("Riden"))
+        );
+        app.control.connect_riden(&ctx, &m);
+        pump(&mut app, &ctx, 5.0, |a| a.control.reading.is_some());
+        app.control.prepare(&m, selected_job(&app));
+        let pf = app.control.preflight.as_ref().unwrap();
+        assert!(
+            pf.checks
+                .iter()
+                .any(|(_, t)| t.contains("2.10 A (panel setting)")),
+            "panel current wins"
+        );
+        assert!(!pf.checks.iter().any(|(c, _)| *c == Check::Block));
+        app.control.start_prepared();
+        let fake = app.control.fake_riden.clone().unwrap();
+        // Current flows once the board switches the wire on.
+        pump(&mut app, &ctx, 10.0, |a| {
+            a.control.reading.is_some_and(|r| r.output && r.i_out > 2.0)
+        });
+        assert!((fake.lock().unwrap().current_set() - 2.1).abs() < 1e-9);
+        // Break the wire: the cut pauses and everything goes off.
+        fake.lock().unwrap().wire_ohms = None;
+        pump(&mut app, &ctx, 10.0, |a| {
+            a.control.job.as_ref().is_some_and(|j| j.paused)
+        });
+        assert!(
+            app.control.message.contains("broken wire"),
+            "{}",
+            app.control.message
+        );
+        pump(&mut app, &ctx, 5.0, |_| !fake.lock().unwrap().output_on());
+        let sim = app.control.sim.clone().unwrap();
+        pump(&mut app, &ctx, 5.0, |_| !sim.lock().unwrap().wire_on());
+        // Mend and resume, then stop: the supply ends switched off.
+        fake.lock().unwrap().wire_ohms = Some(15.0);
+        app.control.resume();
+        pump(&mut app, &ctx, 5.0, |_| fake.lock().unwrap().output_on());
+        pump(&mut app, &ctx, 5.0, |a| {
+            a.control.job.as_ref().is_some_and(|j| !j.paused)
+        });
+        app.control.stop();
+        pump(&mut app, &ctx, 10.0, |a| !a.control.running());
+        pump(&mut app, &ctx, 5.0, |_| !fake.lock().unwrap().output_on());
     }
 
     #[test]

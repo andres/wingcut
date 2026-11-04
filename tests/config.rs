@@ -222,3 +222,22 @@ fn connection_settings_default_and_validate() {
     assert!(machine_err("[connection]\nrx_buffer = 4").contains("rx_buffer"));
     assert!(machine_err("[connection]\nkind = \"bluetooth\"").contains("unknown variant"));
 }
+
+#[test]
+fn riden_settings_default_and_validate() {
+    let m = Machine::parse("").unwrap();
+    assert!(!m.riden.enabled);
+    assert_eq!(
+        (m.riden.current, m.riden.max_voltage, m.riden.address),
+        (1.8, 45.0, 1)
+    );
+    assert!(!m.to_toml().unwrap().contains("riden"));
+    let m = Machine::parse("[riden]\nenabled = true\nport = \"/dev/ttyUSB1\"\ncurrent = 2.1\n")
+        .unwrap();
+    assert!(m.riden.enabled && m.riden.break_detect);
+    assert_eq!(Machine::parse(&m.to_toml().unwrap()).unwrap(), m);
+    assert!(machine_err("[riden]\ncurrent = 0").contains("riden.current"));
+    assert!(machine_err("[riden]\nmax_voltage = 100").contains("max_voltage"));
+    assert!(machine_err("[riden]\naddress = 0").contains("address"));
+    assert!(wing_err(&panel("from = 0\nto = 1000\nwire_current = -1")).contains("wire_current"));
+}

@@ -52,6 +52,79 @@ pub struct Machine {
     /// How to reach the controller (machine control).
     #[serde(default, skip_serializing_if = "Connection::is_default")]
     pub connection: Connection,
+    /// Optional Riden RD60xx wire supply under wingcut's control.
+    #[serde(default, skip_serializing_if = "RidenConfig::is_default")]
+    pub riden: RidenConfig,
+}
+
+/// Riden RD60xx wire supply settings.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RidenConfig {
+    /// Use the supply: set the current per cut, watch the wire.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Use a simulated supply (with the simulated board).
+    #[serde(default)]
+    pub simulated: bool,
+    /// Serial port of the supply's USB interface.
+    #[serde(default)]
+    pub port: String,
+    #[serde(default = "d_baud")]
+    pub baud: u32,
+    /// Modbus address set on the supply.
+    #[serde(default = "d_riden_addr")]
+    pub address: u8,
+    /// Wire current (A) unless a panel sets its own `wire_current`.
+    #[serde(default = "d_riden_current")]
+    pub current: f64,
+    /// Voltage limit (V) for the constant-current supply.
+    #[serde(default = "d_riden_vmax")]
+    pub max_voltage: f64,
+    /// Pause the cut if the current collapses while the wire should be on.
+    #[serde(default = "d_true")]
+    pub break_detect: bool,
+    /// ... below this fraction of the set current.
+    #[serde(default = "d_break_fraction")]
+    pub break_fraction: f64,
+}
+
+fn d_riden_addr() -> u8 {
+    1
+}
+fn d_riden_current() -> f64 {
+    1.8
+}
+fn d_riden_vmax() -> f64 {
+    45.0
+}
+fn d_true() -> bool {
+    true
+}
+fn d_break_fraction() -> f64 {
+    0.5
+}
+
+impl Default for RidenConfig {
+    fn default() -> Self {
+        RidenConfig {
+            enabled: false,
+            simulated: false,
+            port: String::new(),
+            baud: d_baud(),
+            address: d_riden_addr(),
+            current: d_riden_current(),
+            max_voltage: d_riden_vmax(),
+            break_detect: true,
+            break_fraction: d_break_fraction(),
+        }
+    }
+}
+
+impl RidenConfig {
+    pub fn is_default(&self) -> bool {
+        *self == RidenConfig::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -280,6 +353,26 @@ impl Machine {
             "connection.rx_buffer must be between 16 and 10000 bytes"
         );
         ensure!(c.sim_speed > 0.0, "connection.sim_speed must be > 0");
+        let r = &self.riden;
+        finite("riden.current", r.current)?;
+        finite("riden.max_voltage", r.max_voltage)?;
+        finite("riden.break_fraction", r.break_fraction)?;
+        ensure!(
+            r.current > 0.0 && r.current <= 24.0,
+            "riden.current must be in (0, 24] A"
+        );
+        ensure!(
+            r.max_voltage > 0.0 && r.max_voltage <= 60.0,
+            "riden.max_voltage must be in (0, 60] V"
+        );
+        ensure!(
+            (0.0..1.0).contains(&r.break_fraction),
+            "riden.break_fraction must be in [0, 1)"
+        );
+        ensure!(
+            r.address >= 1 && r.address <= 247,
+            "riden.address must be 1..247"
+        );
         for (i, a) in self.axes.iter().enumerate() {
             ensure!(
                 a.len() == 1 && a.chars().all(|c| c.is_ascii_alphabetic()),
@@ -377,6 +470,9 @@ pub struct Panel {
     #[serde(default = "d_side")]
     pub side: Side,
     pub block: Block,
+    /// Wire current (A) for this panel; overrides `riden.current`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_current: Option<f64>,
     /// Skin thickness and LE/TE options.
     #[serde(default, skip_serializing_if = "Sheeting::is_default")]
     pub sheeting: Sheeting,
@@ -617,6 +713,14 @@ impl Wing {
                 "panel {:?}: block height and width must be > 0",
                 p.name
             );
+            if let Some(a) = p.wire_current {
+                finite(&format!("panel {:?} wire_current", p.name), a)?;
+                ensure!(
+                    a > 0.0 && a <= 24.0,
+                    "panel {:?}: wire_current must be in (0, 24] A",
+                    p.name
+                );
+            }
             let sh = &p.sheeting;
             for (name, v) in [
                 ("top", sh.top),
