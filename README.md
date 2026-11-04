@@ -8,7 +8,7 @@ Status: **stages 1–4 built**: CLI core, multi-panel wings, a desktop GUI (shee
 
 ## Build
 
-Quickest way to try everything on a Linux desktop: `bash scripts/try-local.sh` (see [docs/try-locally.md](docs/try-locally.md)).
+Quickest way to try everything on a Linux desktop: `bash scripts/try-local.sh` (builds, tests, updates). After that, `bash scripts/start.sh` opens the app, and `bash scripts/install-desktop.sh` adds it to your application menu. See [docs/try-locally.md](docs/try-locally.md).
 
 ```bash
 cargo build --release        # binary: target/release/wingcut

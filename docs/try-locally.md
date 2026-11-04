@@ -22,6 +22,27 @@ Needs: a C linker (`build-essential` on Debian/Ubuntu) and a normal desktop (X11
 8. **DXF**: on a station, `…` > `examples/airfoils/naca2410.dxf`. The preview should look the same as with the `.dat`.
 9. **Machine control without hardware**: open the **Control** tab, pick **Simulator**, set the speed to 20×, **Connect**, then **Home**. Under Wire supply, tick the box, choose **simulated** and **Connect supply**. Press **Run panel**: the checks should all pass. Start the cut and watch the pink wire marker and the live V/A readout. Try **Pause**, **Resume**, **Break the wire** (the cut should pause by itself) and **STOP**. Save the machine settings with File > Save machine as... if you want to keep them.
 
+## Updating
+
+Run `bash scripts/try-local.sh` again: it pulls the latest version (unless you changed files in the folder; then it says so and keeps yours), runs the tests and rebuilds.
+
+## Starting the app
+
+```bash
+bash scripts/start.sh                         # empty window
+bash scripts/start.sh examples/wing-5m.toml   # open a wing
+```
+
+`start.sh` only builds if the app hasn't been built yet; otherwise it opens at once.
+
+To start wingcut from your desktop's application menu instead, run this once:
+
+```bash
+bash scripts/install-desktop.sh
+```
+
+It adds a "wingcut" entry for your user only (no sudo), pointing at the copy in this folder, so updates through `try-local.sh` are picked up automatically. `bash scripts/install-desktop.sh --remove` takes it out again.
+
 ## Using the binaries directly
 
 ```bash
